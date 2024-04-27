@@ -1,0 +1,68 @@
+import numpy as np
+
+from .mesh import Mesh
+
+
+class Node():
+    def __init__(self, id: int,
+                 children: list,
+                 mesh: Mesh,
+                 matrix: list = [1, 0, 0, 0, 1, 0, 0, 0, 1],
+                 translation: list = [0, 0, 0],
+                 rotation: list = [0, 0, 0, 1],
+                 scale: list = [1, 1, 1],
+                 name: str = None):
+        """
+        Initialize the Node object, initialize next components recursively
+        Args:
+            id: int, the id of the node
+            children: list, the children of the node
+            mesh: pygltflib.gltfScene.components.Mesh, Mesh object referenced by the current node
+            matrix: list or np.ndarray(np.float32), the matrix of the node
+            translation: list or np.ndarray(np.float32), the translation of the node
+            rotation: list or np.ndarray(np.float32), the rotation of the node
+            scale: list or np.ndarray(np.float32), the scale of the node
+            name: str, the name of the node
+        Properties:
+            id: int, the id of the node
+            children: list, the children of the node
+            mesh: pygltflib.gltfScene.components.Mesh, Mesh object referenced by the current node
+            matrix: np.ndarray(np.float32), the matrix of the node
+            translation: np.ndarray(np.float32), the translation of the node
+            rotation: np.ndarray(np.float32), the rotation of the node
+            scale: np.ndarray(np.float32), the scale of the node
+            cameras: list, the cameras of the node
+            name: str, the name of the node
+        """
+        self.id: int = id
+        self.children: list = children
+        self.mesh = None
+        if mesh is not None:
+            self.mesh = mesh
+
+        if isinstance(matrix, list):
+            matrix = np.asarray(matrix, dtype=np.float32)
+        elif isinstance(matrix, np.ndarray) and matrix.dtype != np.float32:
+            raise ValueError("Matrix must be of type np.float32 or list.")
+        self.matrix: np.ndarray = matrix
+        if isinstance(translation, list):
+            translation = np.asarray(translation, dtype=np.float32)
+        elif isinstance(translation, np.ndarray) and translation.dtype != np.float32:
+            raise ValueError("Translation must be of type np.float32 or list.")
+        self.translation: np.ndarray = translation
+        if isinstance(rotation, list):
+            rotation = np.asarray(rotation, dtype=np.float32)
+        elif isinstance(rotation, np.ndarray) and rotation.dtype != np.float32:
+            raise ValueError("Rotation must be of type np.float32 or list.")
+        self.rotation: np.ndarray = rotation
+        if isinstance(scale, list):
+            scale = np.asarray(scale, dtype=np.float32)
+        elif isinstance(scale, np.ndarray) and scale.dtype != np.float32:
+            raise ValueError("Scale must be of type np.float32 or list.")
+        self.scale: np.ndarray = scale
+
+        self.cameras = []  # TODO initialize and support cameras
+
+        self.name: str = None
+        if name is not None:
+            self.name = name
