@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 
 from .mesh import Mesh
@@ -66,3 +68,19 @@ class Node():
         self.name: str = None
         if name is not None:
             self.name = name
+
+    def __str__(self) -> str:
+        class_dict = self.__dict__()
+        return f"Node: {json.dumps(class_dict)}"
+
+    def __dict__(self) -> dict:
+        class_dict = {"id": self.id,
+                      "len(children)": len(self.children),
+                      "children": [child.__dict__() for child in self.children],
+                      "mesh": self.mesh.__dict__() if self.mesh is not None else None,
+                      "matrix": self.matrix.tolist() if self.matrix is not None else None,
+                      "translation": self.translation.tolist() if self.translation is not None else None,
+                      "rotation": self.rotation.tolist() if self.rotation is not None else None,
+                      "scale": self.scale.tolist() if self.scale is not None else None,
+                      "name": self.name}
+        return class_dict

@@ -1,4 +1,6 @@
+import codecs
 import copy
+import json
 import struct
 import tempfile
 from typing import Tuple
@@ -8,6 +10,12 @@ from PIL import Image
 from pygltflib import GLTF2
 
 from .components import Mesh, Node, Primitive
+from .components.annotations import (
+    ArticulatedPart,
+    PrecomputedPart,
+    SegmentationPart,
+    TriSegment,
+)
 from .components.visual import PBRMaterial, TextureImage, TextureMaterial
 
 
@@ -123,7 +131,15 @@ class gltfScene():
             node_map: numpy.ndarray(np.int_), the node map of the vertices
             mesh_map: numpy.ndarray(np.int_), the mesh map of the vertices
             primitive_map: numpy.ndarray(np.int_), the primitive map of the vertices.
-                Note that primitive_map is relative with respect for each mesh as primitives do not have global index
+                           Note that primitive_map is relative with respect for each mesh as primitives do not have global index
+            has_segmentation: bool, whether the scene has segmentation annotations
+            has_articulation: bool, whether the scene has articulation annotations
+            has_precomputed_segmentation: bool, whether the scene has precomputed segmentation annotations
+            segmentation_parts: dict(pygltftoolkit.gltfScene/components.annotations.segmentationPart), the segmentation parts of the scene
+            articulation_parts: dict, the articulation parts of the scene
+            precomputed_segmentation_parts: dict, the precomputed segmentation parts of the scene
+            segmentation_map: numpy.ndarray(np.int_), the segmentation map of the vertices
+            precomputed_segmentation_map: numpy.ndarray(np.int_), the precomputed segmentation map of the vertices
         """
 
         self.gltf2: GLTF2 = gltf2
@@ -136,6 +152,17 @@ class gltfScene():
         self.mesh_map: np.ndarray = np.empty((0), dtype=np.int_)
         self.primitive_map: np.ndarray = np.empty((0), dtype=np.int_)
         self._global_vertex_counter: int = 0
+
+        self.has_segmentation: bool = False
+        self.has_articulation: bool = False
+        self.has_precomputed_segmentation: bool = False
+
+        self.segmentation_parts: dict = {}
+        self.articulation_parts: dict = {}
+        self.precomputed_segmentation_parts: dict = {}
+
+        self.segmentation_map: np.ndarray = np.empty((0), dtype=np.int_)
+        self.precomputed_segmentation_map: np.ndarray = np.empty((0), dtype=np.int_)
 
         for node_id in self.gltf2.scenes[0].nodes:
             new_node = self.initialize_node(node_id)
@@ -269,7 +296,6 @@ class gltfScene():
             self.vertices = np.vstack((self.vertices, transformed_vertices))
         else:
             new_mesh = None
-        print(node_id, pygltflib_node.mesh, new_mesh, new_parent_transform, self._global_vertex_counter)
         new_node = Node(
             id=node_id,
             children=children,
@@ -288,7 +314,31 @@ class gltfScene():
         Args:
             stk_segmentation: string, the path to the segmentation annotations produced by the STK
         """
-        raise NotImplementedError("Not implemented yet.")
+        self.has_segmentation = True
+        self.segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
+
+        with open(stk_segmentation, "r") as f:
+            stk_segmentation = json.load(f)
+        for part in stk_segmentation["parts"]:
+            if part is not None:
+                pid = int(part["pid"])
+                label = part["label"]
+                trisegments = []
+                for seg_data in part["partInfo"]["meshTri"]:
+                    seg_mesh_index = int(seg_data["meshIndex"])
+                    current_mesh = np.where(self.mesh_map == seg_mesh_index)[0]
+                    for tri_data in seg_data["triIndex"]:
+                        if type(tri_data) is int:
+                            self.segmentation_map[current_mesh[tri_data]] = pid
+                        elif type(tri_data) is list:
+                            self.segmentation_map[current_mesh[tri_data[0]:tri_data[1]]] = pid
+                    segIndex = None
+                    if "segIndex" in seg_data:
+                        segIndex = seg_data["segIndex"]
+                    trisegment = TriSegment(meshIndex=seg_mesh_index, triIndex=seg_data["triIndex"], segIndex=segIndex)
+                    trisegments.append(trisegment)
+                new_part = SegmentationPart(pid=pid, name=part["name"], label=label, trisegments=trisegments)
+                self.segmentation_parts[pid] = new_part
 
     def load_stk_articulation(self, stk_articulation: str):
         """
@@ -296,7 +346,29 @@ class gltfScene():
         Args:
             stk_articulation: string, the path to the articulation annotations produced by the STK
         """
-        raise NotImplementedError("Not implemented yet.")
+        if not self.has_segmentation:
+            raise ValueError("Segmentation annotations must be loaded before loading articulation annotations.")
+
+        self.has_articulation = True
+
+        with open(stk_articulation, "r") as f:
+            try:
+                stk_articulation = json.load(f)
+            except json.JSONDecodeError:
+                try:
+                    stk_articulation = json.load(codecs.open(stk_articulation, 'r', 'utf-8-sig'))
+                except json.JSONDecodeError:
+                    raise ValueError("Invalid JSON format.")
+        for articulation in stk_articulation["annotation"]["articulations"]:
+            pid = articulation["pid"]
+            type = articulation["type"]
+            origin = np.asarray(articulation["origin"])
+            axis = np.asarray(articulation["axis"])
+            new_part = ArticulatedPart(pid=pid,
+                                       type=type,
+                                       origin=origin,
+                                       axis=axis)
+            self.articulation_parts[pid] = new_part
 
     def load_stk_precomputed_segmentation(self, stk_precomputed_segmentation: str):
         """
@@ -305,4 +377,37 @@ class gltfScene():
             stk_precomputed_segmentation: string, the path to the precomputed segmentation annotations produced by
             the STK
         """
-        raise NotImplementedError("Not implemented yet.")
+        self.has_precomputed_segmentation = True
+        self.precomputed_segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
+        with open(stk_precomputed_segmentation, "r") as f:
+            stk_precomputed_segmentation = json.load(f)
+        trisegments = []
+        for segment in stk_precomputed_segmentation["segmentation"]:
+            mesh_id = segment["meshIndex"]
+            seg_id = segment["segIndex"]
+            current_mesh = np.where(self.mesh_map == mesh_id)[0]
+
+            for tri_data in segment["triIndex"]:
+                if type(tri_data) is int:
+                    self.precomputed_segmentation_map[current_mesh[tri_data]] = seg_id
+                elif type(tri_data) is list:
+                    self.precomputed_segmentation_map[current_mesh[tri_data[0]:tri_data[1]]] = seg_id
+
+            trisegment = TriSegment(meshIndex=mesh_id, triIndex=tri_data, segIndex=seg_id)
+            trisegments.append(trisegment)
+            new_part = PrecomputedPart(seg_id, trisegments)
+            self.precomputed_segmentation_parts[seg_id] = new_part
+
+    def __str__(self):
+        class_dict = {"len(self.nodes)": len(self.nodes),
+                      "nodes": [node.__dict__() for node in self.nodes],
+                      "len(self.faces)": len(self.faces),
+                      "len(self.vertices)": len(self.vertices),
+                      "len(self.segmentation_parts)": len(self.segmentation_parts),
+                      "segmentation_parts": [part.__dict__() for part in self.segmentation_parts.values()],
+                      "len(self.articulation_parts)": len(self.articulation_parts),
+                      "articulation_parts": [part.__dict__() for part in self.articulation_parts.values()],
+                      "len(self.precomputed_segmentation_parts)": len(self.precomputed_segmentation_parts),
+                      "precomputed_segmentation_parts":
+                      [part.__dict__() for part in self.precomputed_segmentation_parts.values()]}
+        return f"gltfScene: {json.dumps(class_dict)}"

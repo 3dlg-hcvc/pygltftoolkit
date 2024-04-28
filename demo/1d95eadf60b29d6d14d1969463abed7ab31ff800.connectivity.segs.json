@@ -1,0 +1,150 @@
+{
+    "modelId": "fpModel.1d95eadf60b29d6d14d1969463abed7ab31ff800",
+    "metadata": {
+        "method": "connectivity",
+        "format": "trimesh",
+        "condenseFaceIndices": true
+    },
+    "segmentation": [
+        {
+            "meshIndex": 0,
+            "triIndex": [
+                [
+                    0,
+                    288
+                ]
+            ],
+            "segIndex": 0
+        },
+        {
+            "meshIndex": 0,
+            "triIndex": [
+                [
+                    288,
+                    392
+                ]
+            ],
+            "segIndex": 1
+        },
+        {
+            "meshIndex": 0,
+            "triIndex": [
+                [
+                    392,
+                    680
+                ]
+            ],
+            "segIndex": 2
+        },
+        {
+            "meshIndex": 0,
+            "triIndex": [
+                [
+                    680,
+                    748
+                ]
+            ],
+            "segIndex": 3
+        },
+        {
+            "meshIndex": 0,
+            "triIndex": [
+                [
+                    748,
+                    1036
+                ]
+            ],
+            "segIndex": 4
+        },
+        {
+            "meshIndex": 0,
+            "triIndex": [
+                [
+                    1036,
+                    1104
+                ]
+            ],
+            "segIndex": 5
+        },
+        {
+            "meshIndex": 0,
+            "triIndex": [
+                [
+                    1104,
+                    1172
+                ]
+            ],
+            "segIndex": 6
+        },
+        {
+            "meshIndex": 0,
+            "triIndex": [
+                [
+                    1172,
+                    1460
+                ]
+            ],
+            "segIndex": 7
+        },
+        {
+            "meshIndex": 0,
+            "triIndex": [
+                [
+                    1460,
+                    2032
+                ]
+            ],
+            "segIndex": 8
+        },
+        {
+            "meshIndex": 1,
+            "triIndex": [
+                [
+                    0,
+                    1078
+                ]
+            ],
+            "segIndex": 9
+        },
+        {
+            "meshIndex": 2,
+            "triIndex": [
+                [
+                    0,
+                    44
+                ]
+            ],
+            "segIndex": 10
+        },
+        {
+            "meshIndex": 2,
+            "triIndex": [
+                [
+                    44,
+                    308
+                ]
+            ],
+            "segIndex": 11
+        },
+        {
+            "meshIndex": 2,
+            "triIndex": [
+                [
+                    308,
+                    352
+                ]
+            ],
+            "segIndex": 12
+        },
+        {
+            "meshIndex": 3,
+            "triIndex": [
+                [
+                    0,
+                    76
+                ]
+            ],
+            "segIndex": 13
+        }
+    ]
+}

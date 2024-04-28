@@ -29,6 +29,9 @@ Loading a file:
 ```
 import pygltgtoolkit as pygltk
 gltf = pygltk.load("/path/to/file.glb")
+
+# You can print to verify the content
+print(gltf)
 ```
 
 pygltftoolkit provides an "unrolled" view of the scene in addition to basic graph structure
@@ -37,6 +40,14 @@ pygltftoolkit provides an "unrolled" view of the scene in addition to basic grap
 vertices = gltf.vertices
 faces = gltf.faces
 triangles = vertices[faces]
+```
+
+You can load annotations produced by the [Scene Toolkit](https://github.com/smartscenes/sstk) as follows:
+
+```
+gltf.load_stk_segmentation("/path/to/id.artpre.json")
+gltf.load_stk_articulation("/path/to/dataset.id.articulations.json")
+gltf.load_stk_precomputed_segmentation("/path/to/id.connectivity.segs.json")
 ```
 
 In order to preserve dependencies on graph structure when using "unrolled" view, a number of maps are stored. Note that these maps correspond to the nodes that contain meshes and meshes directly (that is parents are not accounted for). Maps exist for nodes, meshes and primitives (however maps are local for primitives as they don't have global id).
@@ -61,7 +72,6 @@ There is a number of limitations that may or may not be lifted in the future:
 * Limited number of texture types supported (excluding normalTexture, occlusionTexture, emissiveTexture)
 
 Current TODOs (approximately in order of priority):
-* Support STK annotations 
 * Point cloud sampling (starting with CPU, CUDA implementation may be added in the future) and exporting to hdf5
 * Mesh modification and exporting
 * KDTree and KNN

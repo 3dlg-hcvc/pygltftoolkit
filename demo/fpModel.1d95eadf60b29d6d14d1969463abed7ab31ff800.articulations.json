@@ -1,0 +1,153 @@
+﻿{
+    "appId": "ArtAnn.v4-20231120",
+    "workerId": "diliash",
+    "modelId": "fpModel.1d95eadf60b29d6d14d1969463abed7ab31ff800",
+    "annotation": {
+        "partsAnnId": 35426,
+        "parts": [
+            null,
+            {
+                "pid": 1,
+                "label": "door"
+            },
+            {
+                "pid": 2,
+                "label": "faucet"
+            },
+            {
+                "pid": 3,
+                "label": "knob"
+            },
+            {
+                "pid": 4,
+                "label": "knob"
+            },
+            {
+                "pid": 5,
+                "label": "base"
+            }
+        ],
+        "connectivity": [
+            [],
+            [
+                5
+            ],
+            [
+                3,
+                4,
+                5
+            ],
+            [
+                2,
+                5
+            ],
+            [
+                2,
+                5
+            ],
+            [
+                2,
+                3,
+                4,
+                1
+            ]
+        ],
+        "articulations": [
+            {
+                "pid": 1,
+                "type": "rotation",
+                "origin": [
+                    0.006764150005399816,
+                    0.4827470891177654,
+                    0.5721016085169937
+                ],
+                "axis": [
+                    0,
+                    1,
+                    0
+                ],
+                "ref": [
+                    -0.7061208603607236,
+                    0,
+                    -0.7080913292531066
+                ],
+                "base": [
+                    5
+                ],
+                "rangeMin": 0,
+                "rangeMax": 1.7278759594743864,
+                "motionStates": {
+                    "closed": {
+                        "percent": 0,
+                        "value": 0
+                    }
+                },
+                "needsReview": false
+            }
+        ],
+        "notes": "",
+        "initConnectivity": [
+            [],
+            [
+                5
+            ],
+            [
+                3,
+                4,
+                5
+            ],
+            [
+                2,
+                5
+            ],
+            [
+                2,
+                5
+            ],
+            [
+                2,
+                3,
+                4,
+                1
+            ]
+        ],
+        "timings": {
+            "times": {
+                "initial": 1714331115506,
+                "annotationSave": 1714331119911
+            },
+            "durations": {
+                "annotationSave": 4405
+            }
+        },
+        "timingHistory": [
+            {
+                "times": {
+                    "initial": 1709781733127,
+                    "annotationSubmit": 1709781873163
+                },
+                "durations": {
+                    "annotationSubmit": 140036
+                }
+            },
+            {
+                "times": {
+                    "initial": 1711941323670,
+                    "annotationSubmit": 1711941420483
+                },
+                "durations": {
+                    "annotationSubmit": 96813
+                }
+            },
+            {
+                "times": {
+                    "initial": 1711996686008,
+                    "annotationSubmit": 1711996762674
+                },
+                "durations": {
+                    "annotationSubmit": 76666
+                }
+            }
+        ]
+    }
+}

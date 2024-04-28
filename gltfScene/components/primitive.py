@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 
 from .visual.material import Material
@@ -32,3 +34,15 @@ class Primitive():
         if vertex_colors is not None:
             self.has_colors = True
         self.material: Material = material
+
+    def __str__(self) -> str:
+        class_dict = self.__dict__()
+        return f"Primitive: {json.dumps(class_dict)}"
+
+    def __dict__(self) -> dict:
+        class_dict = {"attributes": list(self.attributes.keys()),
+                      "has_texture": self.has_texture,
+                      "has_colors": self.has_colors,
+                      "has_baseColorFactor": self.has_baseColorFactor,
+                      "material": self.material.__dict__()}
+        return class_dict

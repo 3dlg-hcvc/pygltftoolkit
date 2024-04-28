@@ -1,3 +1,5 @@
+import json
+
 from PIL import Image
 
 
@@ -21,3 +23,17 @@ class TextureImage():
         self.mimeType: str = mimeType
         self.width: int = image.width
         self.height: int = image.height
+
+    def __str__(self) -> str:
+        class_dict = {"name": self.name,
+                      "mimeType": self.mimeType,
+                      "width": self.width,
+                      "height": self.height}
+        return f"TextureImage: {json.dumps(class_dict)}"
+
+    def __dict__(self) -> dict:
+        class_dict = {"name": self.name,
+                      "mimeType": self.mimeType,
+                      "width": self.width,
+                      "height": self.height}
+        return class_dict
