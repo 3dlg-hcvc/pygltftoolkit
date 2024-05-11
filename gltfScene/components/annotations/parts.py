@@ -32,21 +32,21 @@ class TriSegment():
 
 
 class SegmentationPart():
-    def __init__(self, pid: id, name: str, label: str, trisegments: list):
+    def __init__(self, pid: int, name: str, label: str, trisegments: list):
         """
         Initialize the SegmentationPart object
         Args:
-            pid: id, the id of the part
+            pid: int, the id of the part
             name: str, the name of the part
             label: str, the label of the part
             trisegments: list(TriSegment), the list of segments
         Properties:
-            pid: id, the id of the part
+            pid: int, the id of the part
             name: str, the name of the part
             label: str, the label of the part
             trisegments: list(TriSegment), the list of segments
         """
-        self.pid: id = pid
+        self.pid: int = pid
         self.name: str = name
         self.label: str = label
         self.trisegments: list = trisegments
@@ -64,7 +64,7 @@ class SegmentationPart():
 
 
 class ArticulatedPart():
-    def __init__(self, pid: id, type: str, origin: np.ndarray, axis: np.ndarray):
+    def __init__(self, pid: int, type: str, origin: np.ndarray, axis: np.ndarray):
         """
         Initialize the ArticulatedPart object
         Args:
@@ -78,7 +78,7 @@ class ArticulatedPart():
             origin: np.ndarray, the origin of the part
             axis: np.ndarray, the axis of the part
         """
-        self.pid: id = pid
+        self.pid: int = pid
 
         self.type: str = type
         self.origin: np.ndarray = origin

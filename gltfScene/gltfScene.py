@@ -246,27 +246,31 @@ class gltfScene():
                     )
                 elif "TEXCOORD_0" in attributes:
                     material = self.gltf2.materials[pygltflib_primitive.material]
-                    texture = self.gltf2.textures[material.pbrMetallicRoughness.baseColorTexture.index]
-                    image = self.gltf2.images[texture.source]
-                    bufferView = self.gltf2.bufferViews[image.bufferView]
-                    data = copy.deepcopy(self.gltf2).binary_blob()
+                    if material.pbrMetallicRoughness.baseColorTexture is not None:
+                        texture = self.gltf2.textures[material.pbrMetallicRoughness.baseColorTexture.index]
+                        image = self.gltf2.images[texture.source]
+                        bufferView = self.gltf2.bufferViews[image.bufferView]
+                        data = copy.deepcopy(self.gltf2).binary_blob()
 
-                    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                        # Adopted from https://gitlab.com/dodgyville/pygltflib/-/blob/v1.16.2/pygltflib/__init__.py?ref_type=tags#L793
-                        temp_file.write(data[bufferView.byteOffset:bufferView.byteOffset + bufferView.byteLength])
-                        temp_file_path = temp_file.name
+                        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                            # Adopted from https://gitlab.com/dodgyville/pygltflib/-/blob/v1.16.2/pygltflib/__init__.py?ref_type=tags#L793
+                            temp_file.write(data[bufferView.byteOffset:bufferView.byteOffset + bufferView.byteLength])
+                            temp_file_path = temp_file.name
 
-                    with Image.open(temp_file_path) as pil_image:
-                        width, height = pil_image.size
-                        image_data = pil_image.convert("RGBA")
+                        with Image.open(temp_file_path) as pil_image:
+                            width, height = pil_image.size
+                            image_data = pil_image.convert("RGBA")
 
-                    texcoords = attributes["TEXCOORD_0"]
-                    texture_image = TextureImage(image=image_data, mimeType=image.mimeType, name=image.name)
-                    texture_material = TextureMaterial(image=texture_image, uv=texcoords)
-                    new_primitive = Primitive(
-                        attributes=attributes,
-                        material=texture_material
-                    )
+                        texcoords = attributes["TEXCOORD_0"]
+                        texture_image = TextureImage(image=image_data, mimeType=image.mimeType, name=image.name)
+                        texture_material = TextureMaterial(image=texture_image, uv=texcoords)
+                        new_primitive = Primitive(
+                            attributes=attributes,
+                            material=texture_material
+                        )
+                    else:
+                        new_primitive = Primitive(attributes=attributes)
+                        # TODO handle properly and add default material
                 else:
                     material = self.gltf2.materials[pygltflib_primitive.material]
                     baseColorFactor = material.pbrMetallicRoughness.baseColorFactor
@@ -339,6 +343,78 @@ class gltfScene():
                     trisegments.append(trisegment)
                 new_part = SegmentationPart(pid=pid, name=part["name"], label=label, trisegments=trisegments)
                 self.segmentation_parts[pid] = new_part
+
+    def load_stk_segmentation_openable(self, stk_segmentation: str):
+        """
+        Load the segmentation annotations produced by the STK. Loads parts for "openable" tasks, e.g. S2O.
+        That is, involves additional annotation processing (e.g. combining handles with doors, etc.)
+        Args:
+            stk_segmentation: string, the path to the segmentation annotations produced by the STK
+        """
+        self.has_segmentation = True
+        self.segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
+        with open(stk_segmentation, "r") as f:
+            stk_segmentation = json.load(f)
+        annotated_parts = {}
+        base_part_id = None
+        for part in stk_segmentation["parts"]:
+            if part:
+                part_info = part["partInfo"]
+                part_label = part_info["label"]
+                pid = int(part_info["partId"])
+                if part_label in ["drawer", "door", "lid"]:
+                    annotated_parts[pid] = part_label
+                elif part_label in ["bed", "bunk beds", "base"]:
+                    annotated_parts[pid] = "base"
+                    base_part_id = int(part_info["partId"])
+        for part in stk_segmentation["parts"]:
+            if part:
+                part_info = part["partInfo"]
+                part_label = part_info["label"]
+                if part_label in ["bed", "bunk beds"]:
+                    part_label = "base"
+                pid = int(part_info["partId"])
+                trisegments = []
+                for seg_data in part_info["meshTri"]:
+                    seg_mesh_index = int(seg_data["meshIndex"])
+                    current_mesh = np.where(self.mesh_map == seg_mesh_index)[0]
+                    for tri_data in seg_data["triIndex"]:
+                        if type(tri_data) is int:
+                            self.segmentation_map[current_mesh[tri_data]] = pid
+                        elif type(tri_data) is list:
+                            self.segmentation_map[current_mesh[tri_data[0]:tri_data[1]]] = pid
+                    segIndex = None
+                    if "segIndex" in seg_data:
+                        segIndex = seg_data["segIndex"]
+                    trisegment = TriSegment(meshIndex=seg_mesh_index, triIndex=seg_data["triIndex"], segIndex=segIndex)
+                    trisegments.append(trisegment)
+                if part_label in ["drawer", "door", "lid"]:
+                    new_part = SegmentationPart(pid=pid, name=part["name"], label=part_label, trisegments=trisegments)
+                    self.segmentation_parts[pid] = new_part
+                else:
+                    connected_ids = stk_segmentation["connectivityGraph"][pid]
+                    connected_to_label = None
+                    connected_id = None
+                    if part_label not in ["pillow", "quilt"]:
+                        for c_id in connected_ids:
+                            if c_id in annotated_parts.keys():
+                                connected_to_label = annotated_parts[c_id]
+                                connected_id = int(c_id)
+                            else:
+                                connected_to_label = "base"
+                                connected_id = int(c_id)
+                    if not connected_id or connected_to_label == "base" or part_label in ["pillow", "quilt"]:
+                        if base_part_id in self.segmentation_parts:
+                            self.segmentation_parts[base_part_id].trisegments.extend(trisegments)
+                        else:
+                            new_part = SegmentationPart(pid=base_part_id, name="base", label="base", trisegments=trisegments)
+                            self.segmentation_parts[base_part_id] = new_part
+                    else:
+                        if connected_id in self.segmentation_parts:
+                            self.segmentation_parts[connected_id].trisegments.extend(trisegments)
+                        else:
+                            new_part = SegmentationPart(pid=connected_id, name=annotated_parts[connected_id], label=connected_to_label, trisegments=trisegments)
+                            self.segmentation_parts[connected_id] = new_part
 
     def load_stk_articulation(self, stk_articulation: str):
         """
