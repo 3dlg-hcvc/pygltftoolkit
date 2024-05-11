@@ -46,6 +46,7 @@ You can load annotations produced by the [Scene Toolkit](https://github.com/smar
 
 ```
 gltf.load_stk_segmentation("/path/to/id.artpre.json")
+gltf.load_stk_segmentation_openable("/path/to/id.artpre.json")  # This version involves specific label merging/propagation strategy from S2O
 gltf.load_stk_articulation("/path/to/dataset.id.articulations.json")
 gltf.load_stk_precomputed_segmentation("/path/to/id.connectivity.segs.json")
 ```
