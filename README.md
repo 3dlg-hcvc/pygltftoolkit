@@ -77,6 +77,9 @@ target_coordinate_frame = np.array([[0, 1, 0],
                                     [-1, 0, 0]])
 
 gltf.transform_coordinate_frame(origin_coordinate_frame, target_coordinate_frame)
+
+# Rescale the scene by some factor
+gltf.rescale(2)
 ```
 
 ## Limitations and Development <a name = "dev"></a>
