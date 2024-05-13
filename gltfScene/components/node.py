@@ -9,7 +9,7 @@ class Node():
     def __init__(self, id: int,
                  children: list,
                  mesh: Mesh,
-                 matrix: list = [1, 0, 0, 0, 1, 0, 0, 0, 1],
+                 matrix: list = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
                  translation: list = [0, 0, 0],
                  rotation: list = [0, 0, 0, 1],
                  scale: list = [1, 1, 1],
@@ -68,6 +68,25 @@ class Node():
         self.name: str = None
         if name is not None:
             self.name = name
+
+    def transform_coordinate_frame(self, original_coordinate_frame_4x4: np.ndarray, target_coordinate_frame_4x4: np.ndarray):
+        """
+        Transform the coordinate frame of the node and its children.
+        Args:
+            original_coordinate_frame: np.ndarray, the original coordinate frame (4x4)
+            target_coordinate_frame: np.ndarray, the target coordinate frame (4x4)
+        """
+        if self.matrix is not None:
+            self.matrix = np.dot(np.dot(self.matrix, original_coordinate_frame_4x4.T), target_coordinate_frame_4x4)
+
+        if self.translation is not None:
+            translation_homogeneous = np.append(self.translation, 1)
+            translation_transformed = np.dot(np.dot(translation_homogeneous, original_coordinate_frame_4x4.T),
+                                             target_coordinate_frame_4x4)
+            self.translation = translation_transformed[:3]
+
+        for child in self.children:
+            child.transform_coordinate_frame(original_coordinate_frame_4x4, target_coordinate_frame_4x4)
 
     def __str__(self) -> str:
         class_dict = self.__dict__()

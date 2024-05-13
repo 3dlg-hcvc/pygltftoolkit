@@ -474,6 +474,24 @@ class gltfScene():
             new_part = PrecomputedPart(seg_id, trisegments)
             self.precomputed_segmentation_parts[seg_id] = new_part
 
+    def transform_coordinate_frame(self, original_coordinate_frame: np.ndarray, target_coordinate_frame: np.ndarray):
+        """
+        Transform the coordinate frame of the scene.
+        Args:
+            original_coordinate_frame: np.ndarray, the original coordinate frame (3x3)
+            target_coordinate_frame: np.ndarray, the target coordinate frame (3x3)
+        """
+        original_coordinate_frame_4x4 = np.eye(4)
+        original_coordinate_frame_4x4[:3, :3] = original_coordinate_frame
+        target_coordinate_frame_4x4 = np.eye(4)
+        target_coordinate_frame_4x4[:3, :3] = target_coordinate_frame
+        for node in self.nodes:
+            node.transform_coordinate_frame(original_coordinate_frame_4x4, target_coordinate_frame_4x4)
+        self.vertices = np.dot(self.vertices, original_coordinate_frame.T)
+        self.vertices = np.dot(self.vertices, target_coordinate_frame)
+        self.normals = np.dot(self.normals, original_coordinate_frame.T)
+        self.normals = np.dot(self.normals, target_coordinate_frame)
+
     def __str__(self):
         class_dict = {"len(self.nodes)": len(self.nodes),
                       "nodes": [node.__dict__() for node in self.nodes],

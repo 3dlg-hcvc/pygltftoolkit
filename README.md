@@ -64,6 +64,21 @@ for node_id in nodes:
     # Process node_triangles ...
 ```
 
+Mesh manipulation and modification.
+
+```
+# Change coordinate frame. Updates both gltf.vertices and matrices of all nodes
+origin_coordinate_frame = np.array([[1, 0, 0],
+                                    [0, 1, 0],
+                                    [0, 0, 1]])
+
+target_coordinate_frame = np.array([[0, 1, 0],
+                                    [0, 0, 1],
+                                    [-1, 0, 0]])
+
+gltf.transform_coordinate_frame(origin_coordinate_frame, target_coordinate_frame)
+```
+
 ## Limitations and Development <a name = "dev"></a>
 
 There is a number of limitations that may or may not be lifted in the future:
