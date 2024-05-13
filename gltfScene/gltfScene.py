@@ -6,6 +6,7 @@ import tempfile
 from typing import Tuple
 
 import numpy as np
+import pygltflib
 from PIL import Image
 from pygltflib import GLTF2
 
@@ -499,6 +500,128 @@ class gltfScene():
             scale: float, the scale factor
         """
         self.vertices *= scale
+
+    def color_faces(self, face_colors: np.ndarray, cut_primitives: bool = False):
+        """
+        Color the faces of the scene. Currently implemented for pygltflib.GLTF2 so can be exported.
+        Args:
+            face_colors: np.ndarray, the colors of the faces
+            cut_primitives: bool, whether to cut the primitives
+        """
+        if len(face_colors) != len(self.faces):
+            raise ValueError("Length of face colors must match the number of faces.")
+
+        if face_colors.shape[1] != 4:
+            face_colors = np.hstack((face_colors, np.ones((len(face_colors), 1), dtype=np.float32)))
+
+        # Currently not implemented, however in the future it will be possible to assign colors not as COLOR_0 (vertex colors)
+        # but as face colors using PBRMaterial.
+        """if not cut_primitives:
+            for primitive in np.unique(self.primitive_map):
+                primitive_mask = self.primitive_map == primitive
+                primitive_colors = face_colors[primitive_mask]
+                if len(np.unique(primitive_colors)):
+                    raise ValueError("Face colors must be unique for each primitive or you should allow primitive cutting.")"""
+
+        def dfs_recolor(node, face_colors):
+            if node.mesh is not None:
+                for local_id, primitive in enumerate(node.mesh.primitives):
+                    cur_primitive_mask = np.zeros_like(self.primitive_map, dtype=np.bool_)
+                    cur_node_mask = self.node_map == node.id
+                    cur_primitive_mask[cur_node_mask] = self.primitive_map[cur_node_mask] == local_id
+                    new_face_colors = face_colors[cur_primitive_mask]
+                    primitive.remove_visuals()
+                    new_vertex_colors = np.zeros((len(self.vertices), 4), dtype=np.float32)
+                    primitive_vertex_mask = np.zeros((len(self.vertices)), dtype=np.bool_)
+                    for i, face_color in enumerate(new_face_colors):
+                        new_vertex_colors[self.faces[cur_primitive_mask][i]] = face_color
+                        primitive_vertex_mask[self.faces[cur_primitive_mask][i]] = True
+                    new_vertex_colors = new_vertex_colors[primitive_vertex_mask]
+                    primitive.color_vertices(new_vertex_colors)
+            for child in node.children:
+                dfs_recolor(child, face_colors)
+
+        for node in self.nodes:
+            dfs_recolor(node, face_colors)
+
+        self._recolor_gltf2(face_colors)
+
+    def _recolor_gltf2(self, face_colors: np.ndarray):
+        """
+        Recolor the faces of the scene for pygltflib.GLTF2.
+        Args:
+            face_colors: np.ndarray, the colors of the faces
+        """
+        # NOTE: This function is messy and will be updated. It does not remove existing materials from the buffer.
+        blobs = [self.gltf2.binary_blob()]
+        buffer_offset = len(blobs[0])
+
+        self.gltf2.materials = []
+
+        for mesh_index, mesh in enumerate(self.gltf2.meshes):
+            for primitive_index, primitive in enumerate(mesh.primitives):
+                primitive_mask = (self.primitive_map == primitive_index) & (self.mesh_map == mesh_index)
+                primitive_faces = self.faces[primitive_mask]
+                primitive_colors = face_colors[primitive_mask]
+
+                primitive.material = None
+                if primitive.attributes.COLOR_0 is not None:
+                    primitive.attributes.COLOR_0 = None
+                if primitive.attributes.TEXCOORD_0 is not None:
+                    primitive.attributes.TEXCOORD_0 = None
+
+                # We need defualt material for the primitive with colored vertices, according to GLTF 2.0 specs
+                material = pygltflib.Material(pbrMetallicRoughness=pygltflib.PbrMetallicRoughness(baseColorFactor=[1.0, 1.0, 1.0, 1.0]))
+                material_index = len(self.gltf2.materials)
+                self.gltf2.materials.append(material)
+
+                primitive.material = material_index
+
+                position_accessor = self.gltf2.accessors[primitive.attributes.POSITION]
+                vertex_count = position_accessor.count
+                vertex_colors = np.zeros((vertex_count, 4), dtype=np.float32)
+                offset = -1
+                for face, face_color in zip(primitive_faces, primitive_colors):
+                    if offset == -1:
+                        offset = np.min(face)
+                    vertex_colors[face - offset] = face_color
+
+                byte_length = vertex_colors.nbytes
+                new_buffer_view = pygltflib.BufferView(
+                    buffer=0,
+                    byteOffset=buffer_offset,
+                    byteLength=byte_length
+                )
+
+                buffer_offset += byte_length
+                buffer_view_index = len(self.gltf2.bufferViews)
+                self.gltf2.bufferViews.append(new_buffer_view)
+
+                color_blob = struct.pack(f"{len(vertex_colors) * 4}f", *vertex_colors.flatten().tolist())
+                blobs.append(color_blob)
+
+                color_accessor = pygltflib.Accessor(
+                    bufferView=buffer_view_index,
+                    componentType=pygltflib.FLOAT,
+                    count=len(vertex_colors),
+                    type=pygltflib.VEC4,
+                    max=vertex_colors.max(axis=0).tolist(),
+                    min=vertex_colors.min(axis=0).tolist()
+                )
+                accessor_index = len(self.gltf2.accessors)
+                self.gltf2.accessors.append(color_accessor)
+
+                primitive.attributes.COLOR_0 = accessor_index
+
+        self.gltf2.set_binary_blob(b"".join(blobs))
+
+    def export_gltf2(self, export_path):
+        """
+        Export self.gltf2 (pygltflib.GLTF2)
+        Args:
+            export_path: str, the path to export the glTF 2.0 file
+        """
+        self.gltf2.save(export_path)
 
     def __str__(self):
         class_dict = {"len(self.nodes)": len(self.nodes),

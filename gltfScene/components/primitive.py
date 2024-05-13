@@ -2,7 +2,7 @@ import json
 
 import numpy as np
 
-from .visual.material import Material
+from .visual.material import Material, PBRMaterial
 
 
 class Primitive():
@@ -13,10 +13,13 @@ class Primitive():
         Initialize the Primitive object
         Args:
             attributes: dict, the attributes of the primitive
+            vertex_colors: np.ndarray(np.float32), the colors of the vertices (N * 4)
             material: pygltftoolkit.gltfScene.components.visual.Material, the material of the primitive
         Properties:
             attributes: dict, the attributes of the primitive
+            vertex_colors: np.ndarray(np.float32), the colors of the vertices (N * 4)
             material: pygltftoolkit.gltfScene.components.visual.Material, the material of the primitive
+
         """
         self.attributes: dict = attributes
         self.has_normals: bool = False
@@ -24,16 +27,52 @@ class Primitive():
             self.has_normals = True
         self.has_texture: bool = False
         if "TEXCOORD_0" in self.attributes:
+            # This is not guaranteed, should be fixed
             self.has_texture = True
         self.has_colors: bool = False
         if "COLOR_0" in self.attributes:
             self.has_colors = True
         self.has_baseColorFactor: bool = False
-        if not self.has_texture and not self.has_colors:
+        if not self.has_texture:
             self.has_baseColorFactor = True
+        self.vertex_colors: np.ndarray = None
         if vertex_colors is not None:
+            if np.any(vertex_colors > 1.0) or np.any(vertex_colors < 0.0):
+                raise ValueError("Color must be between 0.0 and 1.0.")
+            if vertex_colors.shape[1] != 4:
+                raise ValueError("Color must have 4 channels.")
+            self.vertex_colors = vertex_colors
             self.has_colors = True
+        if self.has_colors and material is None:
+            material = PBRMaterial(baseColorFactor=np.array([1.0, 1.0, 1.0, 1.0]),
+                                   metallicFactor=1.0,
+                                   roughnessFactor=1.0)
         self.material: Material = material
+
+    def remove_visuals(self):
+        """
+        Remove visuals from the primitive
+        """
+        if self.has_texture:
+            self.attributes.pop("TEXCOORD_0")
+            self.has_texture = False
+        if self.has_colors:
+            self.attributes.pop("COLOR_0")
+            self.has_colors = False
+        if self.has_baseColorFactor:
+            self.has_baseColorFactor = False
+        self.material = None
+
+    def color_vertices(self, vertex_colors: np.ndarray):
+        """
+        Color the vertices of the primitive
+        Args:
+            color: np.ndarray(np.float32), the color of the vertices
+        """
+        if np.all(vertex_colors > 1.0) or np.all(vertex_colors < 0.0):
+            raise ValueError("Color must be between 0.0 and 1.0.")
+        self.attributes["COLOR_0"] = vertex_colors
+        self.has_colors = True
 
     def __str__(self) -> str:
         class_dict = self.__dict__()
