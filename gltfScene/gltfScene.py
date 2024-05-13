@@ -492,6 +492,14 @@ class gltfScene():
         self.normals = np.dot(self.normals, original_coordinate_frame.T)
         self.normals = np.dot(self.normals, target_coordinate_frame)
 
+    def rescale(self, scale: float):
+        """
+        Rescale the scene.
+        Args:
+            scale: float, the scale factor
+        """
+        self.vertices *= scale
+
     def __str__(self):
         class_dict = {"len(self.nodes)": len(self.nodes),
                       "nodes": [node.__dict__() for node in self.nodes],
