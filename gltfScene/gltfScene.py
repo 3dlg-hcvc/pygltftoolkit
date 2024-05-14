@@ -173,7 +173,7 @@ class gltfScene():
                         parent_transform: np.ndarray = np.asarray([[1, 0, 0, 0],
                                                                    [0, 1, 0, 0],
                                                                    [0, 0, 1, 0],
-                                                                   [0, 0, 0, 1]])) -> Node:
+                                                                   [0, 0, 0, 1]], dtype=np.float32)) -> Node:
         """
         Initialize the node object and its children.
         Args:
@@ -181,13 +181,13 @@ class gltfScene():
             parent_transform: np.ndarray, the transformation matrix of the parent node
         """
         checked_attributes = ["COLOR_0", "NORMAL", "POSITION", "TEXCOORD_0"]
-
+        parent_transform = parent_transform.astype(dtype=np.float32)
         pygltflib_node = self.gltf2.nodes[node_id]
         if pygltflib_node.matrix is not None:
             if len(pygltflib_node.matrix) == 16:
-                matrix = np.array(pygltflib_node.matrix).reshape(4, 4)
+                matrix = np.array(pygltflib_node.matrix, dtype=np.float32).reshape(4, 4)
             else:
-                matrix = np.asarray(pygltflib_node.matrix)
+                matrix = np.asarray(pygltflib_node.matrix, np.float32)
             new_parent_transform = np.dot(parent_transform, matrix)
         else:
             translation = np.asarray(pygltflib_node.translation
@@ -205,7 +205,7 @@ class gltfScene():
                 [0, 0, 0, 1]
             ])
             transform = np.dot(translation_matrix, np.dot(rotation_matrix, scale_matrix))
-            new_parent_transform = np.dot(parent_transform, transform)
+            new_parent_transform = np.dot(parent_transform, transform).astype(dtype=np.float32)
 
         children = []
         for child_id in pygltflib_node.children:
@@ -309,7 +309,7 @@ class gltfScene():
             id=node_id,
             children=children,
             mesh=new_mesh,
-            matrix=pygltflib_node.matrix,
+            matrix=new_parent_transform,
             translation=pygltflib_node.translation,
             rotation=pygltflib_node.rotation,
             scale=pygltflib_node.scale,
