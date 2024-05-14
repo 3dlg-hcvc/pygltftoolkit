@@ -184,7 +184,11 @@ class gltfScene():
 
         pygltflib_node = self.gltf2.nodes[node_id]
         if pygltflib_node.matrix is not None:
-            new_parent_transform = np.dot(parent_transform, pygltflib_node.matrix)
+            if len(pygltflib_node.matrix) == 16:
+                matrix = np.array(pygltflib_node.matrix).reshape(4, 4)
+            else:
+                matrix = np.asarray(pygltflib_node.matrix)
+            new_parent_transform = np.dot(parent_transform, matrix)
         else:
             translation = np.asarray(pygltflib_node.translation
                                      if pygltflib_node.translation is not None else [0, 0, 0])
@@ -471,6 +475,32 @@ class gltfScene():
                     self.precomputed_segmentation_map[current_mesh[tri_data[0]:tri_data[1]]] = seg_id
 
             trisegment = TriSegment(meshIndex=mesh_id, triIndex=tri_data, segIndex=seg_id)
+            trisegments.append(trisegment)
+            new_part = PrecomputedPart(seg_id, trisegments)
+            self.precomputed_segmentation_parts[seg_id] = new_part
+    
+    def load_stk_precomputed_segmentation_flattened(self, stk_precomputed_segmentation: str):
+        """
+        Load the precomputed segmentation annotations produced by the STK without respecting the mesh boundaries.
+        Args:
+            stk_precomputed_segmentation: string, the path to the precomputed segmentation annotations produced by
+            the STK
+        """
+        self.has_precomputed_segmentation = True
+        self.precomputed_segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
+        with open(stk_precomputed_segmentation, "r") as f:
+            stk_precomputed_segmentation = json.load(f)
+        trisegments = []
+        for segment in stk_precomputed_segmentation["segmentation"]:
+            seg_id = segment["segIndex"]
+
+            for tri_data in segment["triIndex"]:
+                if type(tri_data) is int:
+                    self.precomputed_segmentation_map[tri_data] = seg_id
+                elif type(tri_data) is list:
+                    self.precomputed_segmentation_map[tri_data[0]:tri_data[1]] = seg_id
+
+            trisegment = TriSegment(meshIndex=-1, triIndex=tri_data, segIndex=seg_id)
             trisegments.append(trisegment)
             new_part = PrecomputedPart(seg_id, trisegments)
             self.precomputed_segmentation_parts[seg_id] = new_part
