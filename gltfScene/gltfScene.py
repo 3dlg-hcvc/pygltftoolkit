@@ -7,6 +7,7 @@ from typing import Tuple
 
 import numpy as np
 import pygltflib
+import trimesh
 from PIL import Image
 from pygltflib import GLTF2
 
@@ -408,18 +409,20 @@ class gltfScene():
                             else:
                                 connected_to_label = "base"
                                 connected_id = int(c_id)
-                    if not connected_id or connected_to_label == "base" or part_label in ["pillow", "quilt"]:
+                    if not connected_id or connected_to_label == "base" or part_label in ["pillow", "quilt", "base"]:
                         if base_part_id in self.segmentation_parts:
                             self.segmentation_parts[base_part_id].trisegments.extend(trisegments)
                         else:
                             new_part = SegmentationPart(pid=base_part_id, name="base", label="base", trisegments=trisegments)
                             self.segmentation_parts[base_part_id] = new_part
+                        self.segmentation_map[self.segmentation_map == pid] = base_part_id
                     else:
                         if connected_id in self.segmentation_parts:
                             self.segmentation_parts[connected_id].trisegments.extend(trisegments)
                         else:
                             new_part = SegmentationPart(pid=connected_id, name=annotated_parts[connected_id], label=connected_to_label, trisegments=trisegments)
                             self.segmentation_parts[connected_id] = new_part
+                        self.segmentation_map[self.segmentation_map == pid] = connected_id
 
     def load_stk_articulation(self, stk_articulation: str):
         """
@@ -644,6 +647,24 @@ class gltfScene():
                 primitive.attributes.COLOR_0 = accessor_index
 
         self.gltf2.set_binary_blob(b"".join(blobs))
+
+    def create_colored_trimesh(self, face_colors: np.ndarray):
+        """
+        Create a colored trimesh from the scene.
+        Args:
+            face_colors: np.ndarray, the colors of the faces
+        """
+        trimesh_faces = []
+        trimesh_vertices = []
+
+        for i, color in enumerate(face_colors):
+            trimesh_faces.append([i*3, i*3+1, i*3+2])
+            trimesh_vertices.append(self.vertices[self.faces[i]][0])
+            trimesh_vertices.append(self.vertices[self.faces[i]][1])
+            trimesh_vertices.append(self.vertices[self.faces[i]][2])
+        mesh = trimesh.Trimesh(vertices=np.array(trimesh_vertices), faces=np.array(trimesh_faces))
+        mesh.visual = trimesh.visual.color.ColorVisuals(mesh, face_colors=face_colors * 255)
+        return mesh
 
     def export_gltf2(self, export_path):
         """
