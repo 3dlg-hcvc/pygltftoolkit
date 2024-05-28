@@ -221,9 +221,16 @@ class gltfScene():
             for primitive_id, pygltflib_primitive in enumerate(pygltflib_mesh.primitives):
                 attributes = {}
                 indices_accessor_idx = pygltflib_primitive.indices
-                indices_data = np.asarray(_read_buffer(self.gltf2, indices_accessor_idx))
-                indices_data += self._global_vertex_counter
-                indices = indices_data.reshape(-1, 3)
+                if indices_accessor_idx is not None:
+                    indices_data = np.asarray(_read_buffer(self.gltf2, indices_accessor_idx))
+                    indices_data += self._global_vertex_counter
+                    indices = indices_data.reshape(-1, 3)
+                else:
+                    # Triangle soup mode
+                    accessor_id = getattr(pygltflib_primitive.attributes, "POSITION")
+                    temp_attr = _read_buffer(self.gltf2, accessor_id)
+                    vertices = np.asarray(temp_attr, dtype=np.float32)
+                    indices = np.arange(self._global_vertex_counter, self._global_vertex_counter + len(vertices)).reshape(-1, 3)
                 self.faces = np.vstack((self.faces, indices))
                 self.node_map = np.concatenate((self.node_map,
                                                 np.array([node_id] * len(indices), dtype=np.int_)))
@@ -665,6 +672,130 @@ class gltfScene():
         mesh = trimesh.Trimesh(vertices=np.array(trimesh_vertices), faces=np.array(trimesh_faces))
         mesh.visual = trimesh.visual.color.ColorVisuals(mesh, face_colors=face_colors * 255)
         return mesh
+
+
+    def create_trimesh(self):
+        """
+        Create a trimesh from the scene with all visuals (textures and colors).
+        """
+        geometry_dict = {}
+
+        def dfs_populate(node):
+            nonlocal geometry_dict
+            if node.mesh is not None:
+                mesh_id = node.mesh.id
+                for primitive_id, primitive in enumerate(node.mesh.primitives):
+                    primitive_faces = self.faces[(self.primitive_map == primitive_id) & (self.mesh_map == mesh_id)]
+                    unique_faces = np.unique(primitive_faces)
+                    primitive_vertices = self.vertices[unique_faces]
+                    new_primitive_faces = np.zeros_like(primitive_faces)
+                    for face_idx, primitive_face in enumerate(primitive_faces):
+                        for vert_idx, primitive_vertex in enumerate(primitive_face):
+                            new_primitive_faces[face_idx][vert_idx] = np.where(unique_faces == primitive_vertex)[0]
+                    if primitive.has_texture:
+                        texture_image = primitive.material.texture
+                        texture_uv = primitive.material.uv
+                        if texture_image is not None:
+                            image = texture_image.image
+                            uv = texture_uv
+                            visual = trimesh.visual.TextureVisuals(uv=uv, image=image)
+                            geometry_dict[f"{mesh_id}-{primitive_id}"] = trimesh.Trimesh(vertices=primitive_vertices, faces=new_primitive_faces, visual=visual)
+                        else:
+                            baseColorFactor = primitive.material.baseColorFactor
+                            face_colors = np.ones((len(new_primitive_faces), 4), dtype=np.float32)
+                            face_colors[:] = baseColorFactor
+                            geometry_dict[f"{mesh_id}-{primitive_id}"] = trimesh.Trimesh(vertices=primitive_vertices, faces=new_primitive_faces, visual=trimesh.visual.color.ColorVisuals(face_colors=face_colors * 255))
+                    elif primitive.has_colors:
+                        baseColorFactor = primitive.material.baseColorFactor
+                        face_colors = np.ones((len(new_primitive_faces), 4), dtype=np.float32)
+                        face_colors[:] = baseColorFactor
+                        face_colors *= primitive.vertex_colors[new_primitive_faces]
+                        geometry_dict[f"{mesh_id}-{primitive_id}"] = trimesh.Trimesh(vertices=primitive_vertices, faces=new_primitive_faces, visual=trimesh.visual.color.ColorVisuals(face_colors=face_colors * 255))
+                    elif primitive.has_baseColorFactor:
+                        baseColorFactor = primitive.material.baseColorFactor
+                        face_colors = np.ones((len(new_primitive_faces), 4), dtype=np.float32)
+                        face_colors[:] = baseColorFactor
+                        geometry_dict[f"{mesh_id}-{primitive_id}"] = trimesh.Trimesh(vertices=primitive_vertices, faces=new_primitive_faces, visual=trimesh.visual.color.ColorVisuals(face_colors=face_colors * 255))
+                    else:
+                        geometry_dict[f"{mesh_id}-{primitive_id}"] = trimesh.Trimesh(vertices=primitive_vertices, faces=new_primitive_faces)
+            for child in node.children:
+                dfs_populate(child)
+        for node in self.nodes:
+            dfs_populate(node)
+
+        trimesh_scene = trimesh.Scene(geometry=geometry_dict)
+        return trimesh_scene
+
+
+    def create_trimesh_deprecated(self):
+        """
+        Create a trimesh from the scene with all visuals (textures and colors).
+        """
+        geometry_dict = {}
+
+        def get_recursive_mesh(nodes):
+            nonlocal geometry_dict
+            for node in nodes:
+                node = self.gltf2.nodes[node]
+                if node.children:
+                    get_recursive_mesh(node.children)
+                if node.mesh is not None:
+                    mesh = self.gltf2.meshes[node.mesh]
+                    for primitive in mesh.primitives:
+                        # Create a trimesh for each primitive
+                        indices = _read_buffer(self.gltf2, primitive.indices)
+                        vertices = _read_buffer(self.gltf2, primitive.attributes.POSITION)
+                        faces = np.array(indices).reshape(-1, 3)
+                        vertices = np.array(vertices)
+                        trimesh_mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+
+                        # Check for vertex colors
+                        if getattr(primitive.attributes, 'COLOR_0') is not None:
+                            colors = _read_buffer(self.gltf2, primitive.attributes.COLOR_0)
+                            colors = np.array(colors)
+                        else:
+                            colors = None
+
+                        # Check for texture coordinates
+                        if getattr(primitive.attributes, 'TEXCOORD_0') is not None:
+                            texcoords = _read_buffer(self.gltf2, primitive.attributes.TEXCOORD_0)
+                            texcoords = np.array(texcoords)
+                        else:
+                            texcoords = None
+
+                        # Apply texture if available
+                        if primitive.material is not None:
+                            material = self.gltf2.materials[primitive.material]
+                            if material.pbrMetallicRoughness.baseColorTexture is not None:
+                                texture = self.gltf2.textures[material.pbrMetallicRoughness.baseColorTexture.index]
+                                image = self.gltf2.images[texture.source]
+                                bufferView = self.gltf2.bufferViews[image.bufferView]
+                                data = copy.deepcopy(self.gltf2).binary_blob()
+
+                                with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                                    temp_file.write(data[bufferView.byteOffset:bufferView.byteOffset + bufferView.byteLength])
+                                    temp_file_path = temp_file.name
+
+                                with Image.open(temp_file_path) as pil_image:
+                                    texture_image = np.array(pil_image.convert("RGBA"))
+
+                                # Create a visual with the texture
+                                visual = trimesh.visual.TextureVisuals(uv=texcoords, image=texture_image)
+                                trimesh_mesh.visual = visual
+                            elif material.pbrMetallicRoughness.baseColorFactor is not None:
+                                baseColorFactor = material.pbrMetallicRoughness.baseColorFactor
+                                face_colors = np.ones((len(faces), 4), dtype=np.float32)
+                                face_colors[:] = baseColorFactor
+                                if colors is not None:
+                                    colors *= baseColorFactor
+                                    face_colors = colors[faces]
+                                trimesh_mesh.visual = trimesh.visual.color.ColorVisuals(trimesh_mesh, face_colors=face_colors * 255)
+                        geometry_dict[str(node.mesh)] = trimesh_mesh
+        get_recursive_mesh([node.id for node in self.nodes])
+
+        trimesh_scene = trimesh.Scene(geometry=geometry_dict)
+
+        return trimesh_scene
 
     def export_gltf2(self, export_path):
         """
