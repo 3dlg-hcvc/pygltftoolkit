@@ -43,11 +43,11 @@ class Primitive():
                 raise ValueError("Color must have 4 channels.")
             self.vertex_colors = vertex_colors
             self.has_colors = True
+        self.material: Material = material
         if self.has_colors and material is None:
             material = PBRMaterial(baseColorFactor=np.array([1.0, 1.0, 1.0, 1.0]),
                                    metallicFactor=1.0,
                                    roughnessFactor=1.0)
-        self.material: Material = material
 
     def remove_visuals(self):
         """
