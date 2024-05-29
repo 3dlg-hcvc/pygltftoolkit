@@ -29,7 +29,6 @@ Please also install meshcat for visualization
 git submodule update --init --recursive
 
 cd meshcat-python
-git submodule update --init --recursive
 python setup.py install
 ```
 
