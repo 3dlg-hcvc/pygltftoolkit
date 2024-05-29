@@ -83,5 +83,5 @@ class Primitive():
                       "has_texture": self.has_texture,
                       "has_colors": self.has_colors,
                       "has_baseColorFactor": self.has_baseColorFactor,
-                      "material": self.material.__dict__()}
+                      "material": self.material.__dict__() if self.material is not None else None}
         return class_dict
