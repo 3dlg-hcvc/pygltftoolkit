@@ -1,3 +1,0 @@
-[submodule "meshcat-python"]
-	path = meshcat-python
-	url = https://github.com/meshcat-dev/meshcat-python
