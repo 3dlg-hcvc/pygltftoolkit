@@ -749,7 +749,8 @@ class gltfScene():
         """
         Render the GLTF scene using MeshCat.
         """
-        vis = meshcat.Visualizer().open()
+        vis = meshcat.Visualizer()
+        #vis.set_cam_target([0.0, 0.0, 0.0])
 
         def add_node_to_scene(node, parent_transform=np.eye(4)):
             node_name = node.name if node.name is not None else str(node.id)
@@ -798,9 +799,7 @@ class gltfScene():
         for node in self.nodes:
             add_node_to_scene(node)
 
-        vis.set_cam_pos([0.6, 0.0, -0.15])
-        vis["/Cameras/default"].set_transform(tf.translation_matrix([0, 0, 0]))
-        vis["/Cameras/default/rotated"].set_transform(tf.rotation_matrix(np.pi / 2, [1, 0, 0]))
+        vis.open()
 
     def export_gltf2(self, export_path):
         """
