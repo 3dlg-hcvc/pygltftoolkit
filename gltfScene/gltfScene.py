@@ -517,7 +517,7 @@ class gltfScene():
             trisegments.append(trisegment)
             new_part = PrecomputedPart(seg_id, trisegments)
             self.precomputed_segmentation_parts[seg_id] = new_part
-    
+
     def load_stk_precomputed_segmentation_flattened(self, stk_precomputed_segmentation: str):
         """
         Load the precomputed segmentation annotations produced by the STK without respecting the mesh boundaries.
@@ -754,6 +754,21 @@ class gltfScene():
         trimesh_scene = trimesh.Scene(geometry=geometry_dict)
         return trimesh_scene
 
+    def interactiveVisualizer(self) -> meshcat.Visualizer:
+        """
+        Create an interactive visualizer for the scene.
+        """
+        vis = meshcat.Visualizer()
+        return vis
+
+    def staticVisualizer(self) -> meshcat.Visualizer:
+        """
+        Create a static visualizer for the scene.
+        """
+        vis = meshcat.Visualizer()
+        vis.open()
+        return vis
+
     def _prepare_vis_context(self, vis):
         def add_node_to_scene(node, parent_transform=np.eye(4)):
             node_name = node.name if node.name is not None else f"node_{node.id}"
@@ -817,26 +832,28 @@ class gltfScene():
         for node in self.nodes:
             add_node_to_scene(node)
 
-    def show(self):
-        """
-        Render the GLTF scene using MeshCat.
-        """
-        vis = meshcat.Visualizer()
-        self._prepare_vis_context(vis)
-        vis.open()
-        vis.join()
-
-    def render(self, output_path, width=1024, height=512):
+    def show(self, vis):
         """
         Render the GLTF scene using MeshCat.
         Args:
+            vis: meshcat.Visualizer, the visualizer object
+        """
+        vis.delete()
+        self._prepare_vis_context(vis)
+        print("Press Ctrl+C to close the visualizer.")
+        vis.open_with_listener()
+
+    def render(self, vis, output_path, width=1024, height=512):
+        """
+        Render the GLTF scene using MeshCat.
+        Args:
+            vis: meshcat.Visualizer, the visualizer object
             output_path: str, the path to save the rendered images
         """
-        vis = meshcat.Visualizer().open(new=0)
+        vis.delete()
         self._prepare_vis_context(vis)
         image = vis.get_image(width, height)
         image.save(output_path, format='PNG')
-        vis.close()
 
     def export_gltf2(self, export_path):
         """
