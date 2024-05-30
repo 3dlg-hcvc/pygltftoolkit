@@ -762,11 +762,13 @@ class gltfScene():
         # vis.set_cam_target([0.0, 0.0, 0.0])
 
         def add_node_to_scene(node, parent_transform=np.eye(4)):
-            node_name = node.name if node.name is not None else str(node.id)
+            node_name = node.name if node.name is not None else f"node_{node.id}"
             transform = node.matrix
             current_transform = np.dot(parent_transform, transform)
             if node.mesh is not None:
+                mesh_name = node.mesh.name if node.mesh.name is not None else f"mesh_{node.mesh.id}"
                 for primitive_id, primitive in enumerate(node.mesh.primitives):
+                    primitive_name = f"primitive_{primitive_id}"
                     attributes = primitive.attributes
                     global_faces = self.faces[(self.primitive_map == primitive_id) & (self.mesh_map == node.mesh.id)]
                     unique_vertices, new_indices = np.unique(global_faces, return_inverse=True)
@@ -785,7 +787,7 @@ class gltfScene():
                         colors = primitive.vertex_colors[:, :3]
                         meshcat_geometry = g.TriangularMeshGeometry(transformed_vertices.tolist(), faces, color=colors)
                         meshcat_material = g.MeshLambertMaterial(vertexColors=True)
-                        vis[node_name].set_object(g.Mesh(meshcat_geometry, meshcat_material))
+                        vis[node_name][mesh_name][primitive_name].set_object(g.Mesh(meshcat_geometry, meshcat_material))
                     elif primitive.has_texture:
                         texcoords = attributes["TEXCOORD_0"]
                         texture_image = primitive.material.texture.image
@@ -806,14 +808,14 @@ class gltfScene():
                         texture = g.ImageTexture(image=png_image, wrap=wrap, repeat=repeat)
                         meshcat_material = g.MeshLambertMaterial(map=texture)
                         meshcat_geometry = g.TriangularMeshGeometry(transformed_vertices, faces, uvs=texcoords)
-                        vis[node_name].set_object(g.Mesh(meshcat_geometry, meshcat_material))
+                        vis[node_name][mesh_name][primitive_name].set_object(g.Mesh(meshcat_geometry, meshcat_material))
                     else:
                         meshcat_geometry = g.TriangularMeshGeometry(transformed_vertices, faces)
                         baseColorFactor = primitive.material.baseColorFactor.astype(np.float32)
                         baseColorFactor = baseColorFactor[:3]
                         hex_color = rgb_to_hex_int(baseColorFactor)
                         meshcat_material = g.MeshLambertMaterial(color=hex(hex_color))
-                        vis[node_name].set_object(g.Mesh(meshcat_geometry, meshcat_material))
+                        vis[node_name][mesh_name][primitive_name].set_object(g.Mesh(meshcat_geometry, meshcat_material))
 
             for child in node.children:
                 add_node_to_scene(child, current_transform)
