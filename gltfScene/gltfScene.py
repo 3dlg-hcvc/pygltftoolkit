@@ -25,6 +25,37 @@ from .components.annotations import (
 from .components.visual import PBRMaterial, Sampler, TextureImage, TextureMaterial
 
 
+def lookat(eye, target, up):
+    z = np.array(eye) - np.array(target)
+    z = z / np.linalg.norm(z)
+    x = np.cross(up, z)
+    x = x / np.linalg.norm(x)
+    y = np.cross(z, x)
+
+    view_matrix = np.array([
+        [x[0], x[1], x[2], -np.dot(x, eye)],
+        [y[0], y[1], y[2], -np.dot(y, eye)],
+        [z[0], z[1], z[2], -np.dot(z, eye)],
+        [0, 0, 0, 1]
+    ])
+
+    return view_matrix
+
+
+def perspective(fov, aspect, near, far):
+    f = 1.0 / np.tan(fov / 2.0)
+    d = far - near
+
+    projection_matrix = np.array([
+        [f / aspect, 0, 0, 0],
+        [0, f, 0, 0],
+        [0, 0, -(far + near) / d, -2 * far * near / d],
+        [0, 0, -1, 0]
+    ])
+
+    return projection_matrix
+
+
 def rgb_to_hex_int(rgb):
     if any(not (0 <= val <= 1) for val in rgb):
         raise ValueError("RGB values should be in the range [0, 1]")
@@ -761,11 +792,21 @@ class gltfScene():
         vis = meshcat.Visualizer()
         return vis
 
-    def staticVisualizer(self) -> meshcat.Visualizer:
+    def staticVisualizer(self, background=False, grid=False, axes=False) -> meshcat.Visualizer:
         """
         Create a static visualizer for the scene.
+        Args:
+            background: bool, whether to show the background
+            grid: bool, whether to show the grid
+            axes: bool, whether to show the axes
         """
         vis = meshcat.Visualizer()
+        if not background:
+            vis["/Background"].set_property("visible", False)
+        if not grid:
+            vis["/Grid"].set_property("visible", False)
+        if not axes:
+            vis["/Axes"].set_property("visible", False)
         vis.open()
         return vis
 
