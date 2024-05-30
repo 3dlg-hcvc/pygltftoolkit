@@ -14,7 +14,7 @@ class Material():
 
 
 class TextureMaterial(Material):
-    def __init__(self, uv: np.ndarray, image: TextureImage) -> None:
+    def __init__(self, uv: np.ndarray, image: TextureImage, sampler: int = None) -> None:
         """
         Initialize the TextureMaterial object
         Args:
@@ -24,6 +24,7 @@ class TextureMaterial(Material):
         """
         self.texture: str = image
         self.uv: np.ndarray = uv
+        self.sampler: int = sampler
 
     def __str__(self) -> str:
         class_dict = self.__dict__()

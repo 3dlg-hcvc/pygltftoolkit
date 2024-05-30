@@ -72,6 +72,7 @@ class Primitive():
         if np.all(vertex_colors > 1.0) or np.all(vertex_colors < 0.0):
             raise ValueError("Color must be between 0.0 and 1.0.")
         self.attributes["COLOR_0"] = vertex_colors
+        self.vertex_colors = vertex_colors
         self.has_colors = True
 
     def __str__(self) -> str:
