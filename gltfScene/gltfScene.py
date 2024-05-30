@@ -1,5 +1,6 @@
 import codecs
 import copy
+import io
 import json
 import struct
 import tempfile
@@ -21,7 +22,7 @@ from .components.annotations import (
     SegmentationPart,
     TriSegment,
 )
-from .components.visual import PBRMaterial, TextureImage, TextureMaterial
+from .components.visual import PBRMaterial, Sampler, TextureImage, TextureMaterial
 
 
 def rgb_to_hex_int(rgb):
@@ -158,6 +159,7 @@ class gltfScene():
 
         self.gltf2: GLTF2 = gltf2
         self.nodes: list = []
+        self.samplers: list = []
         self.faces: np.ndarray = np.empty((0, 3), dtype=np.int_)
         self.vertices: np.ndarray = np.empty((0, 3), dtype=np.float32)  # With transformation applied
         self.no_transform_vertices: np.ndarray = np.empty((0, 3), dtype=np.float32)  # Without transformation applied
@@ -182,6 +184,14 @@ class gltfScene():
 
         self.segmentation_map: np.ndarray = np.empty((0), dtype=np.int_)
         self.precomputed_segmentation_map: np.ndarray = np.empty((0), dtype=np.int_)
+
+        for pygltflib_sampler in self.gltf2.samplers:
+            magFilter = pygltflib_sampler.magFilter
+            minFilter = pygltflib_sampler.minFilter
+            wrapS = pygltflib_sampler.wrapS
+            wrapT = pygltflib_sampler.wrapT
+            new_sampler = Sampler(magFilter=magFilter, minFilter=minFilter, wrapS=wrapS, wrapT=wrapT)
+            self.samplers.append(new_sampler)
 
         for node_id in self.gltf2.scenes[0].nodes:
             new_node = self.initialize_node(node_id)
@@ -295,7 +305,7 @@ class gltfScene():
 
                         texcoords = attributes["TEXCOORD_0"]
                         texture_image = TextureImage(image=image_data, mimeType=image.mimeType, name=image.name)
-                        texture_material = TextureMaterial(image=texture_image, uv=texcoords)
+                        texture_material = TextureMaterial(image=texture_image, uv=texcoords, sampler=texture.sampler)
                         new_primitive = Primitive(
                             attributes=attributes,
                             material=texture_material
@@ -602,7 +612,6 @@ class gltfScene():
 
         for node in self.nodes:
             dfs_recolor(node, face_colors)
-
         self._recolor_gltf2(face_colors)
 
     def _recolor_gltf2(self, face_colors: np.ndarray):
@@ -750,7 +759,7 @@ class gltfScene():
         Render the GLTF scene using MeshCat.
         """
         vis = meshcat.Visualizer()
-        #vis.set_cam_target([0.0, 0.0, 0.0])
+        # vis.set_cam_target([0.0, 0.0, 0.0])
 
         def add_node_to_scene(node, parent_transform=np.eye(4)):
             node_name = node.name if node.name is not None else str(node.id)
@@ -772,22 +781,35 @@ class gltfScene():
                     transformed_vertices = np.dot(local_vertices_homogeneous, current_transform.T)
                     transformed_vertices = transformed_vertices[:, :3] / transformed_vertices[:, 3][:, np.newaxis]
 
-                    meshcat_geometry = g.TriangularMeshGeometry(transformed_vertices.tolist(), faces)
-
                     if primitive.has_colors:
-                        colors = primitive.vertex_colors.tolist()
+                        colors = primitive.vertex_colors[:, :3]
+                        meshcat_geometry = g.TriangularMeshGeometry(transformed_vertices.tolist(), faces, color=colors)
                         meshcat_material = g.MeshLambertMaterial(vertexColors=True)
                         vis[node_name].set_object(g.Mesh(meshcat_geometry, meshcat_material))
-                        vis[node_name]["colors"].set_object(g.PointsGeometry(transformed_vertices.tolist(), colors))
                     elif primitive.has_texture:
-                        texcoords = attributes["TEXCOORD_0"].tolist()
+                        texcoords = attributes["TEXCOORD_0"]
                         texture_image = primitive.material.texture.image
-                        texture = g.ImageTexture(image=texture_image)
+                        # Flip image
+                        texture_image = texture_image.transpose(Image.FLIP_TOP_BOTTOM)
+                        sampler_id = primitive.material.sampler
+                        if sampler_id is not None:
+                            sampler = self.samplers[sampler_id]
+                            wrap = [sampler.wrapS, sampler.wrapT]
+                            repeat = [1, 1]
+                        else:
+                            wrap = [1001, 1001]
+                            repeat = [1, 1]
+                        img_byte_arr = io.BytesIO()
+                        texture_image.save(img_byte_arr, format='PNG')
+                        img_bytes = img_byte_arr.getvalue()
+                        png_image = g.PngImage(img_bytes)
+                        texture = g.ImageTexture(image=png_image, wrap=wrap, repeat=repeat)
                         meshcat_material = g.MeshLambertMaterial(map=texture)
+                        meshcat_geometry = g.TriangularMeshGeometry(transformed_vertices, faces, uvs=texcoords)
                         vis[node_name].set_object(g.Mesh(meshcat_geometry, meshcat_material))
-                        vis[node_name]["texcoords"].set_object(g.PointsGeometry(transformed_vertices.tolist(), texcoords))
                     else:
-                        baseColorFactor = primitive.material.baseColorFactor.tolist()
+                        meshcat_geometry = g.TriangularMeshGeometry(transformed_vertices, faces)
+                        baseColorFactor = primitive.material.baseColorFactor.astype(np.float32)
                         baseColorFactor = baseColorFactor[:3]
                         hex_color = rgb_to_hex_int(baseColorFactor)
                         meshcat_material = g.MeshLambertMaterial(color=hex(hex_color))
