@@ -249,7 +249,7 @@ class gltfScene():
                 matrix = np.array(pygltflib_node.matrix, dtype=np.float32).reshape(4, 4)
             else:
                 matrix = np.asarray(pygltflib_node.matrix, np.float32)
-            new_parent_transform = np.dot(parent_transform, matrix)
+            new_parent_transform = (matrix @ parent_transform).astype(dtype=np.float32)
         else:
             translation = np.asarray(pygltflib_node.translation
                                      if pygltflib_node.translation is not None else [0, 0, 0])
@@ -265,8 +265,8 @@ class gltfScene():
                 [0, 0, 1, translation[2]],
                 [0, 0, 0, 1]
             ])
-            transform = np.dot(translation_matrix, np.dot(rotation_matrix, scale_matrix))
-            new_parent_transform = np.dot(parent_transform, transform).astype(dtype=np.float32)
+            transform = translation_matrix @ rotation_matrix @ scale_matrix
+            new_parent_transform = (transform @ parent_transform).astype(dtype=np.float32)
 
         children = []
         for child_id in pygltflib_node.children:
@@ -334,7 +334,7 @@ class gltfScene():
                         with Image.open(temp_file_path) as pil_image:
                             width, height = pil_image.size
                             image_data = pil_image.convert("RGBA")
-                        
+
                         os.remove(temp_file_path)
 
                         texcoords = attributes["TEXCOORD_0"]
@@ -370,9 +370,10 @@ class gltfScene():
                 node_vertices_homogeneous = np.hstack((node_vertices, ones))
             else:
                 node_vertices_homogeneous = node_vertices
-            transformed_vertices = np.dot(node_vertices_homogeneous, new_parent_transform.T)
-            if node_vertices.shape[1] == 3:
-                transformed_vertices = transformed_vertices[:, :3] / transformed_vertices[:, 3][:, np.newaxis]
+
+            transformed_vertices = np.dot(node_vertices_homogeneous, new_parent_transform)
+            transformed_vertices = transformed_vertices[:, :3] / transformed_vertices[:, 3][:, np.newaxis]
+
             self.vertices = np.vstack((self.vertices, transformed_vertices))
         else:
             new_mesh = None
@@ -830,7 +831,7 @@ class gltfScene():
             if node.mesh is not None:
                 mesh_name = f"mesh_{node.mesh.id}"
                 for primitive_id, primitive in enumerate(node.mesh.primitives):
-                    print(f"Adding node {node_name} mesh {mesh_name} primitive {primitive_id}")
+                    # print(f"Adding node {node_name} mesh {mesh_name} primitive {primitive_id}")
                     primitive_name = f"primitive_{primitive_id}"
                     attributes = primitive.attributes
                     global_faces = self.faces[(self.primitive_map == primitive_id) & (self.mesh_map == node.mesh.id)]
@@ -840,7 +841,7 @@ class gltfScene():
 
                     if primitive.has_colors:
                         colors = primitive.vertex_colors[:, :3]
-                        print(f"with colors {colors.shape} and vertices {local_vertices.shape}")
+                        # print(f"with colors {colors.shape} and vertices {local_vertices.shape}")
                         meshcat_geometry = g.TriangularMeshGeometry(local_vertices.tolist(), faces, color=colors)
                         meshcat_material = g.MeshLambertMaterial(vertexColors=True)
                         vis[node_name][mesh_name][primitive_name].set_object(g.Mesh(meshcat_geometry, meshcat_material))
@@ -901,6 +902,72 @@ class gltfScene():
         self._prepare_vis_context(vis)
         image = vis.get_image(width, height)
         image.save(output_path, format='PNG')
+
+    def sample_uniform(self, n_samples: int, recenter=False, rescale=False, vertices=False, fpd=False, oversample: int = 0) -> dict:
+        """
+        Sample uniform point cloud from the scene.
+        Args:
+            n_samples: int, the number of samples
+            recenter: bool, whether to recenter the point cloud
+            rescale: bool, whether to rescale the point cloud
+            vertices: bool, whether to add vertices to the output
+            fpd: bool, whether to use Farthest Point Downsampling from oversampled point cloud
+            oversample: int, the number of oversampled points
+        """
+        # Sampling is area weighted per triangle, however if the triangle area is too small there is an adaptive threshold
+
+        if fpd:
+            if oversample == 0:
+                raise ValueError("Oversample must be greater than 0 for Farthest Point Downsampling.")
+            current_samples = oversample
+        else:
+            current_samples = n_samples
+        triangles = self.vertices[self.faces]
+
+        bbox_min = np.min(triangles, axis=1)
+        bbox_max = np.max(triangles, axis=1)
+
+        if recenter:
+            center = (bbox_min + bbox_max) / 2
+            triangles -= center
+        if rescale:
+            current_scale = np.linalg.norm(bbox_max - bbox_min, axis=1)
+            scale = 2 / np.max(current_scale)
+            triangles *= scale
+
+        cross_products = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+        areas = np.linalg.norm(cross_products, axis=1) / 2
+        total_area = np.sum(areas)
+
+        triangle_samples = np.maximum(np.ceil(current_samples * areas / total_area).astype(np.int_), np.ceil(current_samples / len(self.faces))).astype(int)
+        # Generate random barycentric coordinates
+        u = np.random.rand(int(np.sum(triangle_samples)))
+        v = np.random.rand(int(np.sum(triangle_samples)))
+        mask = u + v > 1
+        u[mask] = 1 - u[mask]
+        v[mask] = 1 - v[mask]
+        w = 1 - u - v
+
+        repeated_triangles = np.repeat(triangles, triangle_samples, axis=0)
+        sample_triangle_map = np.repeat(np.arange(len(self.faces)), triangle_samples)
+        samples = u[:, np.newaxis] * repeated_triangles[:, 0] + v[:, np.newaxis] * repeated_triangles[:, 1] + w[:, np.newaxis] * repeated_triangles[:, 2]
+
+        if fpd:
+            # Generate downsampling mask for Farthest Point Downsampling
+            def farthest_point_downsampling_idx(points, n_samples):
+                farthest_pts_idx = np.zeros(n_samples, dtype=int)
+                farthest_pts_idx[0] = np.random.randint(len(points))
+                distances = np.linalg.norm(points - points[farthest_pts_idx[0]], axis=1)
+                for i in range(1, n_samples):
+                    farthest_pts_idx[i] = np.argmax(distances)
+                    distances = np.minimum(distances, np.linalg.norm(points - points[farthest_pts_idx[i]], axis=1))
+                return farthest_pts_idx
+
+            farthest_pts_idx = farthest_point_downsampling_idx(samples, n_samples)
+            downsampled_samples = samples[farthest_pts_idx]
+
+            import pdb; pdb.set_trace()
+
 
     def export_gltf2(self, export_path):
         """
