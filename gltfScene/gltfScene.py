@@ -2,6 +2,7 @@ import codecs
 import copy
 import io
 import json
+import os
 import struct
 import tempfile
 from typing import Tuple
@@ -333,6 +334,8 @@ class gltfScene():
                         with Image.open(temp_file_path) as pil_image:
                             width, height = pil_image.size
                             image_data = pil_image.convert("RGBA")
+                        
+                        os.remove(temp_file_path)
 
                         texcoords = attributes["TEXCOORD_0"]
                         texture_image = TextureImage(image=image_data, mimeType=image.mimeType, name=image.name)
@@ -465,6 +468,14 @@ class gltfScene():
                     new_part = SegmentationPart(pid=pid, name=part["name"], label=part_label, trisegments=trisegments)
                     self.segmentation_parts[pid] = new_part
                 else:
+                    if part_label in ["pillow", "quilt", "base"]:
+                        if base_part_id in self.segmentation_parts:
+                            self.segmentation_parts[base_part_id].trisegments.extend(trisegments)
+                        else:
+                            new_part = SegmentationPart(pid=base_part_id, name="base", label="base", trisegments=trisegments)
+                            self.segmentation_parts[base_part_id] = new_part
+                        self.segmentation_map[self.segmentation_map == pid] = base_part_id
+                        continue
                     connected_ids = stk_segmentation["connectivityGraph"][pid]
                     connected_to_label = None
                     connected_id = None
@@ -476,7 +487,7 @@ class gltfScene():
                             else:
                                 connected_to_label = "base"
                                 connected_id = int(c_id)
-                    if not connected_id or connected_to_label == "base" or part_label in ["pillow", "quilt", "base"]:
+                    if not connected_id or connected_to_label == "base":
                         if base_part_id in self.segmentation_parts:
                             self.segmentation_parts[base_part_id].trisegments.extend(trisegments)
                         else:
@@ -792,7 +803,8 @@ class gltfScene():
         vis = meshcat.Visualizer()
         return vis
 
-    def staticVisualizer(self, background=False, grid=False, axes=False) -> meshcat.Visualizer:
+    @staticmethod
+    def staticVisualizer(background=False, grid=False, axes=False) -> meshcat.Visualizer:
         """
         Create a static visualizer for the scene.
         Args:
@@ -812,12 +824,13 @@ class gltfScene():
 
     def _prepare_vis_context(self, vis):
         def add_node_to_scene(node, parent_transform=np.eye(4)):
-            node_name = node.name if node.name is not None else f"node_{node.id}"
+            node_name = f"node_{node.id}"
             transform = node.matrix
             current_transform = np.dot(parent_transform, transform)
             if node.mesh is not None:
-                mesh_name = node.mesh.name if node.mesh.name is not None else f"mesh_{node.mesh.id}"
+                mesh_name = f"mesh_{node.mesh.id}"
                 for primitive_id, primitive in enumerate(node.mesh.primitives):
+                    print(f"Adding node {node_name} mesh {mesh_name} primitive {primitive_id}")
                     primitive_name = f"primitive_{primitive_id}"
                     attributes = primitive.attributes
                     global_faces = self.faces[(self.primitive_map == primitive_id) & (self.mesh_map == node.mesh.id)]
@@ -825,17 +838,10 @@ class gltfScene():
                     faces = new_indices.reshape(global_faces.shape).tolist()
                     local_vertices = self.vertices[unique_vertices]
 
-                    # Convert local_vertices to homogeneous coordinates
-                    ones = np.ones((local_vertices.shape[0], 1))
-                    local_vertices_homogeneous = np.hstack((local_vertices, ones))
-
-                    # Apply the transformation
-                    transformed_vertices = np.dot(local_vertices_homogeneous, current_transform.T)
-                    transformed_vertices = transformed_vertices[:, :3] / transformed_vertices[:, 3][:, np.newaxis]
-
                     if primitive.has_colors:
                         colors = primitive.vertex_colors[:, :3]
-                        meshcat_geometry = g.TriangularMeshGeometry(transformed_vertices.tolist(), faces, color=colors)
+                        print(f"with colors {colors.shape} and vertices {local_vertices.shape}")
+                        meshcat_geometry = g.TriangularMeshGeometry(local_vertices.tolist(), faces, color=colors)
                         meshcat_material = g.MeshLambertMaterial(vertexColors=True)
                         vis[node_name][mesh_name][primitive_name].set_object(g.Mesh(meshcat_geometry, meshcat_material))
                     elif primitive.has_texture:
@@ -857,10 +863,10 @@ class gltfScene():
                         png_image = g.PngImage(img_bytes)
                         texture = g.ImageTexture(image=png_image, wrap=wrap, repeat=repeat)
                         meshcat_material = g.MeshLambertMaterial(map=texture)
-                        meshcat_geometry = g.TriangularMeshGeometry(transformed_vertices, faces, uvs=texcoords)
+                        meshcat_geometry = g.TriangularMeshGeometry(local_vertices, faces, uvs=texcoords)
                         vis[node_name][mesh_name][primitive_name].set_object(g.Mesh(meshcat_geometry, meshcat_material))
                     else:
-                        meshcat_geometry = g.TriangularMeshGeometry(transformed_vertices, faces)
+                        meshcat_geometry = g.TriangularMeshGeometry(local_vertices, faces)
                         baseColorFactor = primitive.material.baseColorFactor.astype(np.float32)
                         baseColorFactor = baseColorFactor[:3]
                         hex_color = rgb_to_hex_int(baseColorFactor)

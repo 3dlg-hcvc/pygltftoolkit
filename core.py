@@ -1,3 +1,4 @@
+import os
 import tempfile
 
 import pygltflib
@@ -34,6 +35,7 @@ def load(
             scene.save_binary(temp_file.name)
             temp_file_path = temp_file.name
         scene = pygltflib.GLTF2().load(temp_file_path)
+        os.remove(temp_file_path)
 
     gltf = gltfScene(scene)
 
