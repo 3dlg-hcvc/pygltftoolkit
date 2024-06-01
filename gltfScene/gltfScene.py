@@ -173,11 +173,13 @@ class gltfScene():
             nodes: list, the nodes in the glTF 2.0 scene
             faces: numpy.ndarray(np.int_), the faces of the mesh
             vertices: numpy.ndarray(np.float32), the vertices of the mesh with transformation applied
-            normals: numpy.ndarray(np.float32), the normals of the mesh
+            normals: numpy.ndarray(np.float32), the normals (per vertex) of the mesh
             no_transform_vertices: numpy.ndarray(np.float32), the vertices of the mesh without transformation applied
-            node_map: numpy.ndarray(np.int_), the node map of the vertices
-            mesh_map: numpy.ndarray(np.int_), the mesh map of the vertices
-            primitive_map: numpy.ndarray(np.int_), the primitive map of the vertices.
+            node_map: numpy.ndarray(np.int_), the node map of the faces
+            node_lookup: dict, the node lookup {node_id: Node}
+            mesh_map: numpy.ndarray(np.int_), the mesh map of the faces
+            mesh_lookup: dict, the mesh lookup {mesh_id: Mesh}
+            primitive_map: numpy.ndarray(np.int_), the primitive map of the faces.
                            Note that primitive_map is relative with respect for each mesh as primitives do not have global index
             has_segmentation: bool, whether the scene has segmentation annotations
             has_articulation: bool, whether the scene has articulation annotations
@@ -185,8 +187,8 @@ class gltfScene():
             segmentation_parts: dict(pygltftoolkit.gltfScene/components.annotations.segmentationPart), the segmentation parts of the scene
             articulation_parts: dict, the articulation parts of the scene
             precomputed_segmentation_parts: dict, the precomputed segmentation parts of the scene
-            segmentation_map: numpy.ndarray(np.int_), the segmentation map of the vertices
-            precomputed_segmentation_map: numpy.ndarray(np.int_), the precomputed segmentation map of the vertices
+            segmentation_map: numpy.ndarray(np.int_), the segmentation map of the faces
+            precomputed_segmentation_map: numpy.ndarray(np.int_), the precomputed segmentation map of the faces
         """
 
         self.gltf2: GLTF2 = gltf2
@@ -201,6 +203,7 @@ class gltfScene():
         self.node_lookup: dict = {}
 
         self.mesh_map: np.ndarray = np.empty((0), dtype=np.int_)
+        self.mesh_lookup: dict = {}
 
         self.primitive_map: np.ndarray = np.empty((0), dtype=np.int_)
 
@@ -365,6 +368,7 @@ class gltfScene():
                 name=pygltflib_mesh.name,
                 primitives=primitives
             )
+            self.mesh_lookup[pygltflib_node.mesh] = new_mesh
             if node_vertices.shape[1] == 3:
                 ones = np.ones((node_vertices.shape[0], 1))
                 node_vertices_homogeneous = np.hstack((node_vertices, ones))
@@ -744,7 +748,6 @@ class gltfScene():
         mesh.visual = trimesh.visual.color.ColorVisuals(mesh, face_colors=face_colors * 255)
         return mesh
 
-
     def create_trimesh(self):
         """
         Create a trimesh from the scene with all visuals (textures and colors).
@@ -903,11 +906,12 @@ class gltfScene():
         image = vis.get_image(width, height)
         image.save(output_path, format='PNG')
 
-    def sample_uniform(self, n_samples: int, recenter=False, rescale=False, vertices=False, fpd=False, oversample: int = 0) -> dict:
+    def sample_uniform(self, n_samples: int, semantic_map: dict = None, recenter=False, rescale=False, vertices=False, fpd=False, oversample: int = 0, allow_nonuniform: bool = True) -> dict:
         """
         Sample uniform point cloud from the scene.
         Args:
             n_samples: int, the number of samples
+            semantic_map: dict, the semantic map
             recenter: bool, whether to recenter the point cloud
             rescale: bool, whether to rescale the point cloud
             vertices: bool, whether to add vertices to the output
@@ -938,8 +942,10 @@ class gltfScene():
         cross_products = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
         areas = np.linalg.norm(cross_products, axis=1) / 2
         total_area = np.sum(areas)
-
-        triangle_samples = np.maximum(np.ceil(current_samples * areas / total_area).astype(np.int_), np.ceil(current_samples / len(self.faces))).astype(int)
+        if allow_nonuniform:
+            triangle_samples = np.maximum(np.ceil(current_samples * areas / total_area).astype(np.int_), np.ceil(current_samples / len(self.faces))).astype(int)
+        else:
+            triangle_samples = np.ceil(current_samples * areas / total_area).astype(np.int_)
         # Generate random barycentric coordinates
         u = np.random.rand(int(np.sum(triangle_samples)))
         v = np.random.rand(int(np.sum(triangle_samples)))
@@ -949,8 +955,78 @@ class gltfScene():
         w = 1 - u - v
 
         repeated_triangles = np.repeat(triangles, triangle_samples, axis=0)
-        sample_triangle_map = np.repeat(np.arange(len(self.faces)), triangle_samples)
+        global_triangle_ids = np.repeat(np.arange(len(self.faces)), triangle_samples)
         samples = u[:, np.newaxis] * repeated_triangles[:, 0] + v[:, np.newaxis] * repeated_triangles[:, 1] + w[:, np.newaxis] * repeated_triangles[:, 2]
+
+        return_dict = {}
+
+        points = samples
+        colors = np.zeros((len(points), 4), dtype=np.float32)
+        barycentric_coords = np.hstack((u[:, np.newaxis], v[:, np.newaxis], w[:, np.newaxis]))
+
+        for mesh_id in np.unique(self.mesh_map):
+            mesh = self.mesh_lookup[mesh_id]
+            for primitive_id, primitive in enumerate(mesh.primitives):
+                primitive_mask = (self.primitive_map == primitive_id) & (self.mesh_map == mesh_id)
+                primitive_idx = np.where(primitive_mask)[0]
+                local_triangle_ids = np.repeat(np.arange(len(primitive_idx)), triangle_samples[primitive_mask])
+                global_triangle_ids_primitive = np.repeat(np.arange(len(self.faces))[primitive_mask], triangle_samples[primitive_mask])
+                sampled_mask = np.repeat(primitive_mask, triangle_samples)
+                sampled_faces = self.faces[global_triangle_ids_primitive]
+                sampled_faces -= sampled_faces.min()
+                if primitive.has_colors:
+                    vertex_colors = primitive.vertex_colors
+                    face_colors = vertex_colors[self.faces[primitive_mask]]
+                    sampled_face_colors = face_colors[local_triangle_ids]
+                    # Interpolate from vertex colors
+                    colors[sampled_mask] = u[global_triangle_ids_primitive, np.newaxis] * sampled_face_colors[:, 0] + v[global_triangle_ids_primitive, np.newaxis] * sampled_face_colors[:, 1] + w[global_triangle_ids, np.newaxis] * sampled_face_colors[:, 2]
+                elif primitive.has_baseColorFactor:
+                    baseColorFactor = primitive.material.baseColorFactor
+                    colors[sampled_mask] = baseColorFactor
+                elif primitive.has_texture:
+                    if primitive.material.sampler is not None:
+                        sampler = self.samplers[primitive.material.sampler]
+                    else:
+                        sampler = Sampler()
+                    colors[sampled_mask] = sampler.sample_from_barycentric(sampled_faces, barycentric_coords[sampled_mask],
+                                                                           primitive.attributes["TEXCOORD_0"],
+                                                                           primitive.material.texture.image)
+                else:
+                    raise ValueError("Primitive must have colors, baseColorFactor or texture.")
+
+        # Interpolate normals from barycentric coordinates
+        normals = np.sum(self.normals[self.faces[global_triangle_ids]] * barycentric_coords[:, :, np.newaxis], axis=1)
+        normals /= np.linalg.norm(normals, axis=1)[:, np.newaxis]
+
+        node_indices = self.node_map[global_triangle_ids]
+        mesh_indices = self.mesh_map[global_triangle_ids]
+        primitive_indices = self.primitive_map[global_triangle_ids]
+        mesh_offsets = np.array([np.sort(np.where(self.mesh_map == unique_mesh)[0])[0] for unique_mesh in np.sort(np.unique(self.mesh_map))])
+        local_tri_indices = global_triangle_ids - mesh_offsets[mesh_indices]
+        global_tri_indices = global_triangle_ids
+        vertex_ids = -np.ones(len(points))
+
+        if self.has_precomputed_segmentation:
+            seg_indices = self.precomputed_segmentation_map[global_triangle_ids]
+        else:
+            seg_indices = -np.ones_like(global_triangle_ids)
+
+        if self.has_segmentation:
+            part_label_map = {part.pid: part.label for part in self.segmentation_parts.values()}
+            semantic_labels = np.array([part_label_map[seg_id] for seg_id in self.segmentation_map])
+            semantic_ids = np.array([semantic_map[part_label] for part_label in semantic_labels[global_triangle_ids]])
+            instance_ids = self.segmentation_map[global_triangle_ids]
+        else:
+            semantic_ids = -np.ones_like(global_triangle_ids)
+            instance_ids = -np.ones_like(global_triangle_ids)
+
+        import open3d as o3d
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(points)
+        pcd.colors = o3d.utility.Vector3dVector(colors[:, :3])
+        pcd.normals = o3d.utility.Vector3dVector(normals)
+        # Draw with normals
+        o3d.visualization.draw_geometries([pcd], point_show_normal=True)
 
         if fpd:
             # Generate downsampling mask for Farthest Point Downsampling
@@ -964,9 +1040,115 @@ class gltfScene():
                 return farthest_pts_idx
 
             farthest_pts_idx = farthest_point_downsampling_idx(samples, n_samples)
-            downsampled_samples = samples[farthest_pts_idx]
+            """import open3d as o3d
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(points[farthest_pts_idx])
+            pcd.colors = o3d.utility.Vector3dVector(colors[farthest_pts_idx, :3])
+            o3d.visualization.draw_geometries([pcd])"""
+            points = points[farthest_pts_idx]
+            colors = colors[farthest_pts_idx]
+            normals = normals[farthest_pts_idx]
+            node_indices = node_indices[farthest_pts_idx]
+            mesh_indices = mesh_indices[farthest_pts_idx]
+            primitive_indices = primitive_indices[farthest_pts_idx]
+            local_tri_indices = local_tri_indices[farthest_pts_idx]
+            global_tri_indices = global_tri_indices[farthest_pts_idx]
+            seg_indices = seg_indices[farthest_pts_idx]
+            semantic_ids = semantic_ids[farthest_pts_idx]
+            instance_ids = instance_ids[farthest_pts_idx]
+            barycentric_coords = barycentric_coords[farthest_pts_idx]
+            vertex_ids = vertex_ids[farthest_pts_idx]
 
-            import pdb; pdb.set_trace()
+        if vertices:
+            vertices = self.vertices
+            vertex_normals = self.normals
+            vertex_barycentric_coords = np.zeros(vertices.shape)
+            vertex_colors = np.zeros((len(vertices), 4), dtype=np.float32)
+            flattened_faces = self.faces.flatten()
+            vertex_node_indices = self.node_map[flattened_faces]
+            vertex_mesh_indices = self.mesh_map[flattened_faces]
+            vertex_primitive_indices = self.primitive_map[flattened_faces]
+            vertex_local_tri_indices = -np.ones(len(vertices))
+            vertex_global_tri_indices = -np.ones(len(vertices))
+            vertex_seg_indices = -np.ones(len(vertices))
+            vertex_instance_ids = self.segmentation_map[flattened_faces]
+            if self.has_segmentation:
+                part_label_map = {part.pid: part.label for part in self.segmentation_parts.values()}
+                semantic_labels = np.array([part_label_map[seg_id] for seg_id in self.segmentation_map])
+                vertex_semantic_ids = np.array([semantic_map[part_label] for part_label in semantic_labels])
+            else:
+                vertex_semantic_ids = -np.ones(len(vertices))
+
+            points = np.vstack((points, vertices))
+            colors = np.vstack((colors, vertex_colors))
+            normals = np.vstack((normals, vertex_normals))
+            barycentric_coords = np.vstack((barycentric_coords, vertex_barycentric_coords))
+            node_indices = np.hstack((node_indices, vertex_node_indices))
+            mesh_indices = np.hstack((mesh_indices, vertex_mesh_indices))
+            primitive_indices = np.hstack((primitive_indices, vertex_primitive_indices))
+            local_tri_indices = np.hstack((local_tri_indices, vertex_local_tri_indices))
+            global_tri_indices = np.hstack((global_tri_indices, vertex_global_tri_indices))
+            seg_indices = np.hstack((seg_indices, vertex_seg_indices))
+            semantic_ids = np.hstack((semantic_ids, vertex_semantic_ids))
+            instance_ids = np.hstack((instance_ids, vertex_instance_ids))
+            vertex_ids = np.hstack((vertex_ids, np.arange(len(vertices))))
+
+        original_points = copy.deepcopy(points)
+
+        if recenter:
+            min_bbox = points.min(axis=0)
+            max_bbox = points.max(axis=0)
+            center = (min_bbox + max_bbox) / 2
+            points -= center
+
+        if rescale:
+            min_bbox = points.min(axis=0)
+            max_bbox = points.max(axis=0)
+            diag = np.linalg.norm(max_bbox - min_bbox)
+            scale = 2 / diag
+            points *= scale
+
+        return_dict["points"] = points
+        return_dict["colors"] = colors[:, :3]
+        return_dict["normals"] = normals
+        return_dict["barycentric_coords"] = barycentric_coords
+        return_dict["node_indices"] = node_indices
+        return_dict["mesh_indices"] = mesh_indices
+        return_dict["primitive_indices"] = primitive_indices
+        return_dict["local_tri_indices"] = local_tri_indices
+        return_dict["global_tri_indices"] = global_tri_indices
+        return_dict["seg_indices"] = seg_indices
+        return_dict["semantic_ids"] = semantic_ids
+        return_dict["instance_ids"] = instance_ids
+        return_dict["vertex_ids"] = vertex_ids
+        return_dict["original_points"] = original_points
+        import open3d as o3d
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(points)
+        pcd.normals = o3d.utility.Vector3dVector(normals)
+        pcd.colors = o3d.utility.Vector3dVector(colors[:, :3])
+        o3d.visualization.draw_geometries([pcd])
+        semantic_color_map = np.random.rand(len(np.arange(np.max(list(semantic_map.values())))) + 1, 3)
+        semantic_colors = semantic_color_map[semantic_ids]
+        import pdb; pdb.set_trace()
+        pcd.colors = o3d.utility.Vector3dVector(semantic_colors)
+        o3d.visualization.draw_geometries([pcd])
+        isntance_color_map = np.random.rand(len(np.unique(instance_ids)), 3)
+        instance_colors = isntance_color_map[instance_ids]
+        pcd.colors = o3d.utility.Vector3dVector(instance_colors)
+        o3d.visualization.draw_geometries([pcd])
+        segments_color_map = np.random.rand(len(np.unique(seg_indices)), 3)
+        segments_colors = segments_color_map[seg_indices]
+        pcd.colors = o3d.utility.Vector3dVector(segments_colors)
+        o3d.visualization.draw_geometries([pcd])
+        node_color_map = np.random.rand(len(np.unique(node_indices)), 3)
+        node_colors = node_color_map[node_indices]
+        pcd.colors = o3d.utility.Vector3dVector(node_colors)
+        o3d.visualization.draw_geometries([pcd])
+        mesh_color_map = np.random.rand(len(np.unique(mesh_indices)), 3)
+        mesh_colors = mesh_color_map[mesh_indices]
+        pcd.colors = o3d.utility.Vector3dVector(mesh_colors)
+        o3d.visualization.draw_geometries([pcd])
 
 
     def export_gltf2(self, export_path):

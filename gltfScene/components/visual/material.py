@@ -22,7 +22,7 @@ class TextureMaterial(Material):
         Properties:
             texture: str, the path to the texture
         """
-        self.texture: str = image
+        self.texture: TextureImage = image
         self.uv: np.ndarray = uv
         self.sampler: int = sampler
 
