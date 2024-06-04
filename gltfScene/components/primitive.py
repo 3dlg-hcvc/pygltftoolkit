@@ -2,7 +2,7 @@ import json
 
 import numpy as np
 
-from .visual.material import Material, PBRMaterial
+from .visual.material import Material, PBRMaterial, TextureMaterial
 
 
 class Primitive():
@@ -26,8 +26,7 @@ class Primitive():
         if "NORMAL" in self.attributes:
             self.has_normals = True
         self.has_texture: bool = False
-        if "TEXCOORD_0" in self.attributes:
-            # This is not guaranteed, should be fixed
+        if type(material) is TextureMaterial:
             self.has_texture = True
         self.has_colors: bool = False
         if "COLOR_0" in self.attributes:

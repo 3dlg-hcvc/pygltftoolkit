@@ -347,6 +347,16 @@ class gltfScene():
                             attributes=attributes,
                             material=texture_material
                         )
+                    elif material.pbrMetallicRoughness.baseColorFactor is not None:
+                        baseColorFactor = material.pbrMetallicRoughness.baseColorFactor
+                        metallicFactor = material.pbrMetallicRoughness.metallicFactor
+                        roughnessFactor = material.pbrMetallicRoughness.roughnessFactor
+                        new_primitive = Primitive(
+                            attributes=attributes,
+                            material=PBRMaterial(baseColorFactor=baseColorFactor,
+                                                 metallicFactor=metallicFactor,
+                                                 roughnessFactor=roughnessFactor)
+                        )
                     else:
                         new_primitive = Primitive(attributes=attributes)
                         # TODO handle properly and add default material
@@ -526,7 +536,9 @@ class gltfScene():
                     stk_articulation = json.load(codecs.open(stk_articulation, 'r', 'utf-8-sig'))
                 except json.JSONDecodeError:
                     raise ValueError("Invalid JSON format.")
-        for articulation in stk_articulation["annotation"]["articulations"]:
+        if "annotation" in stk_articulation:
+            stk_articulation = stk_articulation["annotation"]
+        for articulation in stk_articulation["articulations"]:
             pid = articulation["pid"]
             type = articulation["type"]
             origin = np.asarray(articulation["origin"])
@@ -841,13 +853,14 @@ class gltfScene():
                     unique_vertices, new_indices = np.unique(global_faces, return_inverse=True)
                     faces = new_indices.reshape(global_faces.shape).tolist()
                     local_vertices = self.vertices[unique_vertices]
+                    normals = self.normals[unique_vertices]
 
                     if primitive.has_colors:
                         colors = primitive.vertex_colors[:, :3]
                         # print(f"with colors {colors.shape} and vertices {local_vertices.shape}")
-                        meshcat_geometry = g.TriangularMeshGeometry(local_vertices.tolist(), faces, color=colors)
+                        meshcat_geometry = g.TriangularMeshGeometry(local_vertices.tolist(), faces, color=colors, normals=normals)
                         meshcat_material = g.MeshLambertMaterial(vertexColors=True)
-                        vis[node_name][mesh_name][primitive_name].set_object(g.Mesh(meshcat_geometry, meshcat_material))
+                        vis[node_name][mesh_name][primitive_name].set_object(g.Mesh(meshcat_geometry, meshcat_material, renderOrder=0))
                     elif primitive.has_texture:
                         texcoords = attributes["TEXCOORD_0"]
                         texture_image = primitive.material.texture.image
@@ -867,16 +880,15 @@ class gltfScene():
                         png_image = g.PngImage(img_bytes)
                         texture = g.ImageTexture(image=png_image, wrap=wrap, repeat=repeat)
                         meshcat_material = g.MeshLambertMaterial(map=texture)
-                        meshcat_geometry = g.TriangularMeshGeometry(local_vertices, faces, uvs=texcoords)
-                        vis[node_name][mesh_name][primitive_name].set_object(g.Mesh(meshcat_geometry, meshcat_material))
+                        meshcat_geometry = g.TriangularMeshGeometry(local_vertices, faces, uvs=texcoords, normals=normals)
+                        vis[node_name][mesh_name][primitive_name].set_object(g.Mesh(meshcat_geometry, meshcat_material, renderOrder=2))
                     else:
-                        meshcat_geometry = g.TriangularMeshGeometry(local_vertices, faces)
+                        meshcat_geometry = g.TriangularMeshGeometry(local_vertices, faces, normals=normals)
                         baseColorFactor = primitive.material.baseColorFactor.astype(np.float32)
                         baseColorFactor = baseColorFactor[:3]
                         hex_color = rgb_to_hex_int(baseColorFactor)
                         meshcat_material = g.MeshLambertMaterial(color=hex(hex_color))
-                        vis[node_name][mesh_name][primitive_name].set_object(g.Mesh(meshcat_geometry, meshcat_material))
-
+                        vis[node_name][mesh_name][primitive_name].set_object(g.Mesh(meshcat_geometry, meshcat_material, renderOrder=1))
             for child in node.children:
                 add_node_to_scene(child, current_transform)
 
@@ -966,7 +978,9 @@ class gltfScene():
 
         for mesh_id in np.unique(self.mesh_map):
             mesh = self.mesh_lookup[mesh_id]
+            print(f"Mesh {mesh_id}, {mesh}")
             for primitive_id, primitive in enumerate(mesh.primitives):
+                print(f"Primitive {primitive_id}, {primitive}")
                 primitive_mask = (self.primitive_map == primitive_id) & (self.mesh_map == mesh_id)
                 primitive_idx = np.where(primitive_mask)[0]
                 local_triangle_ids = np.repeat(np.arange(len(primitive_idx)), triangle_samples[primitive_mask])
@@ -1004,21 +1018,21 @@ class gltfScene():
         mesh_offsets = np.array([np.sort(np.where(self.mesh_map == unique_mesh)[0])[0] for unique_mesh in np.sort(np.unique(self.mesh_map))])
         local_tri_indices = global_triangle_ids - mesh_offsets[mesh_indices]
         global_tri_indices = global_triangle_ids
-        vertex_ids = -np.ones(len(points))
+        vertex_ids = -np.ones(len(points), dtype=np.int_)
 
         if self.has_precomputed_segmentation:
             seg_indices = self.precomputed_segmentation_map[global_triangle_ids]
         else:
-            seg_indices = -np.ones_like(global_triangle_ids)
+            seg_indices = -np.ones_like(global_triangle_ids, dtype=np.int_)
 
         if self.has_segmentation:
             part_label_map = {part.pid: part.label for part in self.segmentation_parts.values()}
             semantic_labels = np.array([part_label_map[seg_id] for seg_id in self.segmentation_map])
-            semantic_ids = np.array([semantic_map[part_label] for part_label in semantic_labels[global_triangle_ids]])
+            semantic_ids = np.array([int(semantic_map[part_label]) for part_label in semantic_labels[global_triangle_ids]])
             instance_ids = self.segmentation_map[global_triangle_ids]
         else:
-            semantic_ids = -np.ones_like(global_triangle_ids)
-            instance_ids = -np.ones_like(global_triangle_ids)
+            semantic_ids = -np.ones_like(global_triangle_ids, dtype=np.int_)
+            instance_ids = -np.ones_like(global_triangle_ids, dtype=np.int_)
 
         import open3d as o3d
         pcd = o3d.geometry.PointCloud()
@@ -1064,20 +1078,24 @@ class gltfScene():
             vertex_normals = self.normals
             vertex_barycentric_coords = np.zeros(vertices.shape)
             vertex_colors = np.zeros((len(vertices), 4), dtype=np.float32)
-            flattened_faces = self.faces.flatten()
-            vertex_node_indices = self.node_map[flattened_faces]
-            vertex_mesh_indices = self.mesh_map[flattened_faces]
-            vertex_primitive_indices = self.primitive_map[flattened_faces]
-            vertex_local_tri_indices = -np.ones(len(vertices))
-            vertex_global_tri_indices = -np.ones(len(vertices))
-            vertex_seg_indices = -np.ones(len(vertices))
-            vertex_instance_ids = self.segmentation_map[flattened_faces]
+            vertex_face_correspondence = np.zeros(len(vertices), dtype=np.int_)
+            for i, face in enumerate(self.faces):
+                vertex_face_correspondence[face] = i
+            vertex_node_indices = self.node_map[vertex_face_correspondence]
+            vertex_mesh_indices = self.mesh_map[vertex_face_correspondence]
+            vertex_primitive_indices = self.primitive_map[vertex_face_correspondence]
+            vertex_local_tri_indices = -np.ones(len(vertices), dtype=np.int_)
+            vertex_global_tri_indices = -np.ones(len(vertices), dtype=np.int_)
+            if self.has_precomputed_segmentation:
+                vertex_seg_indices = self.precomputed_segmentation_map[vertex_face_correspondence]
             if self.has_segmentation:
                 part_label_map = {part.pid: part.label for part in self.segmentation_parts.values()}
                 semantic_labels = np.array([part_label_map[seg_id] for seg_id in self.segmentation_map])
-                vertex_semantic_ids = np.array([semantic_map[part_label] for part_label in semantic_labels])
+                vertex_semantic_ids = np.array([semantic_map[label] for label in semantic_labels[vertex_face_correspondence]], dtype=np.int_)
+                vertex_instance_ids = self.segmentation_map[vertex_face_correspondence]
             else:
-                vertex_semantic_ids = -np.ones(len(vertices))
+                vertex_semantic_ids = -np.ones(len(vertices), dtype=np.int_)
+                vertex_instance_ids = -np.ones(len(vertices), dtype=np.int_)
 
             points = np.vstack((points, vertices))
             colors = np.vstack((colors, vertex_colors))
@@ -1130,10 +1148,12 @@ class gltfScene():
         o3d.visualization.draw_geometries([pcd])
         semantic_color_map = np.random.rand(len(np.arange(np.max(list(semantic_map.values())))) + 1, 3)
         semantic_colors = semantic_color_map[semantic_ids]
-        import pdb; pdb.set_trace()
+        print(f"Points shape {points.shape}\nColors shape {colors.shape}\nNormals shape {normals.shape}\nSemantic ids shape {semantic_ids.shape}\nInstance ids shape {instance_ids.shape}\nSeg ids shape {seg_indices.shape}\nNode indices shape {node_indices.shape}\nMesh indices shape {mesh_indices.shape}\nPrimitive indices shape {primitive_indices.shape}\nLocal tri indices shape {local_tri_indices.shape}\nGlobal tri indices shape {global_tri_indices.shape}\nVertex ids shape {vertex_ids.shape}")
+        if type(vertices) is np.ndarray:
+            print(f"\n\nVertex points shape {vertices.shape}\nVertex colors shape {vertex_colors.shape}\nVertex normals shape {vertex_normals.shape}\nVertex semantic ids shape {vertex_semantic_ids.shape}\nVertex instance ids shape {vertex_instance_ids.shape}\nVertex seg ids shape {vertex_seg_indices.shape}\nVertex node indices shape {vertex_node_indices.shape}\nVertex mesh indices shape {vertex_mesh_indices.shape}\nVertex primitive indices shape {vertex_primitive_indices.shape}\nVertex local tri indices shape {vertex_local_tri_indices.shape}\nVertex global tri indices shape {vertex_global_tri_indices.shape}")
         pcd.colors = o3d.utility.Vector3dVector(semantic_colors)
         o3d.visualization.draw_geometries([pcd])
-        isntance_color_map = np.random.rand(len(np.unique(instance_ids)), 3)
+        isntance_color_map = np.random.rand(len(np.arange(np.max(instance_ids))) + 1, 3)
         instance_colors = isntance_color_map[instance_ids]
         pcd.colors = o3d.utility.Vector3dVector(instance_colors)
         o3d.visualization.draw_geometries([pcd])
