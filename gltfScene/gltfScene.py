@@ -1170,7 +1170,6 @@ class gltfScene():
         pcd.colors = o3d.utility.Vector3dVector(mesh_colors)
         o3d.visualization.draw_geometries([pcd])
 
-
     def export_gltf2(self, export_path):
         """
         Export self.gltf2 (pygltflib.GLTF2)
@@ -1178,6 +1177,92 @@ class gltfScene():
             export_path: str, the path to export the glTF 2.0 file
         """
         self.gltf2.save(export_path)
+
+    def translate_part(self, part_id: int, translation: float, axis: np.ndarray = None, modify_geometry: bool = False):
+        """
+        Translate a part.
+        Args:
+            part_id: int, the part id
+            translation: float, the translation distance
+            axis: np.ndarray, the translation axis
+            modify_geometry: bool, whether to modify the geometry (False for just the matrix)
+        """
+        if not self.has_segmentation:
+            raise ValueError("Scene must have segmentation to translate parts.")
+        if axis is None and self.has_articulation:
+            raise ValueError("Provide either axis or articulation annotations.")
+        elif axis is None:
+            axis = self.articulation_parts[part_id].axis
+
+        part_mask = self.segmentation_map == part_id
+        part_faces = self.faces[part_mask]
+        part_vertex_ids = np.unique(part_faces)
+        part_vertices = self.vertices[part_vertex_ids]
+        part_vertices += translation * axis
+        self.vertices[part_vertex_ids] = part_vertices
+
+        if not modify_geometry:
+            # Modify only the matrix (both for pygltflib.GLTF2 and self.nodes)
+            part_nodes = self.node_map[part_mask]
+            unique_part_nodes = np.unique(part_nodes)
+            # Check if unique nodes are exclusive to part
+            for node in unique_part_nodes:
+                node_mask = self.node_map == node
+                if np.any(np.logical_and(node_mask, np.logical_xor(node_mask, part_mask))):
+                    raise ValueError("Nodes are not exclusive to the part. Set modify_geometry to True to modify part geometry directly.")
+            for node in unique_part_nodes:
+                if self.gltf2.nodes[node].matrix is None:
+                    node_matrix = np.eye(4)
+                else:
+                    node_matrix = np.asarray(self.gltf2.nodes[node].matrix)
+                    if node_matrix.shape != (4, 4):
+                        if len(node_matrix) == 16:
+                            node_matrix = node_matrix.reshape((4, 4))
+                import pdb; pdb.set_trace()
+                self.gltf2.nodes[node].matrix = (node_matrix @ (np.asarray([[1, 0, 0, 0],
+                                                                           [0, 1, 0, 0],
+                                                                           [0, 0, 1, 0],
+                                                                           [translation * axis[0], translation * axis[1], translation * axis[2], 1]]))).flatten().tolist()
+        else:
+            self.original_vertices[part_vertex_ids] = part_vertices
+            # Now also modify self.gltf2 (pygltflib.GLTF2) with updated vertices
+            blobs = [self.gltf2.binary_blob()]
+            buffer_offset = len(blobs[0])
+
+            for mesh_index, mesh in enumerate(self.gltf2.meshes):
+                for primitive_index, primitive in enumerate(mesh.primitives):
+                    primitive_mask = (self.primitive_map == primitive_index) & (self.mesh_map == mesh_index)
+                    primitive_faces = self.faces[primitive_mask]
+                    position_accessor = self.gltf2.accessors[primitive.attributes.POSITION]
+                    vertex_count = position_accessor.count
+                    vertex_positions = np.zeros((vertex_count, 3), dtype=np.float32)
+                    offset = -1
+                    for face in primitive_faces:
+                        if offset == -1:
+                            offset = np.min(face)
+                        vertex_positions[face - offset] = self.vertices[face]
+
+                    byte_length = vertex_positions.nbytes
+                    new_buffer_view = pygltflib.BufferView(
+                        buffer=0,
+                        byteOffset=buffer_offset,
+                        byteLength=byte_length
+                    )
+
+                    buffer_offset += byte_length
+                    buffer_view_index = len(self.gltf2.bufferViews)
+                    self.gltf2.bufferViews.append(new_buffer_view)
+
+                    position_blob = struct.pack(f"{len(vertex_positions) * 3}f", *vertex_positions.flatten().tolist())
+                    blobs.append(position_blob)
+
+                    position_accessor.bufferView = buffer_view_index
+                    position_accessor.byteOffset = 0
+                    position_accessor.count = len(vertex_positions)
+                    position_accessor.max = vertex_positions.max(axis=0).tolist()
+                    position_accessor.min = vertex_positions.min(axis=0).tolist()
+
+            self.gltf2.set_binary_blob(b"".join(blobs))
 
     def __str__(self):
         class_dict = {"len(self.nodes)": len(self.nodes),
