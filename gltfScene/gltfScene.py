@@ -176,7 +176,7 @@ class gltfScene():
             normals: numpy.ndarray(np.float32), the normals (per vertex) of the mesh
             no_transform_vertices: numpy.ndarray(np.float32), the vertices of the mesh without transformation applied
             node_map: numpy.ndarray(np.int_), the node map of the faces
-            node_lookup: dict, the node lookup {node_id: Node}
+            node_lookup: dict, the node lookup {node_id: {\"node\": Node, \"parent_id\": int}}
             mesh_map: numpy.ndarray(np.int_), the mesh map of the faces
             mesh_lookup: dict, the mesh lookup {mesh_id: Mesh}
             primitive_map: numpy.ndarray(np.int_), the primitive map of the faces.
@@ -1189,7 +1189,7 @@ class gltfScene():
         """
         if not self.has_segmentation:
             raise ValueError("Scene must have segmentation to translate parts.")
-        if axis is None and self.has_articulation:
+        if axis is None and not self.has_articulation:
             raise ValueError("Provide either axis or articulation annotations.")
         elif axis is None:
             axis = self.articulation_parts[part_id].axis
@@ -1218,11 +1218,10 @@ class gltfScene():
                     if node_matrix.shape != (4, 4):
                         if len(node_matrix) == 16:
                             node_matrix = node_matrix.reshape((4, 4))
-                import pdb; pdb.set_trace()
                 self.gltf2.nodes[node].matrix = (node_matrix @ (np.asarray([[1, 0, 0, 0],
-                                                                           [0, 1, 0, 0],
-                                                                           [0, 0, 1, 0],
-                                                                           [translation * axis[0], translation * axis[1], translation * axis[2], 1]]))).flatten().tolist()
+                                                                            [0, 1, 0, 0],
+                                                                            [0, 0, 1, 0],
+                                                                            [translation * axis[0], translation * axis[1], translation * axis[2], 1]]))).flatten().tolist()
         else:
             self.original_vertices[part_vertex_ids] = part_vertices
             # Now also modify self.gltf2 (pygltflib.GLTF2) with updated vertices
@@ -1263,6 +1262,285 @@ class gltfScene():
                     position_accessor.min = vertex_positions.min(axis=0).tolist()
 
             self.gltf2.set_binary_blob(b"".join(blobs))
+
+    def rotate_part(self, part_id: int, angle: float, axis: np.ndarray = None, origin: np.ndarray = None, modify_geometry: bool = False):
+        """
+        Rotate a part.
+        Args:
+            part_id: int, the part id
+            angle: float, the rotation angle in degrees
+            axis: np.ndarray, the rotation axis
+            origin: np.ndarray, the origin of the rotation
+            modify_geometry: bool, whether to modify the geometry (False for just the matrix)
+        """
+        if not self.has_segmentation:
+            raise ValueError("Scene must have segmentation to rotate parts.")
+        if axis is None and not self.has_articulation:
+            raise ValueError("Provide either axis or articulation annotations.")
+        elif axis is None:
+            axis = self.articulation_parts[part_id].axis
+        if origin is None and self.has_articulation:
+            origin = self.articulation_parts[part_id].origin
+        elif origin is None:
+            origin = np.array([0, 0, 0])
+
+        # Convert angle from degrees to radians
+        angle = np.radians(angle)
+
+        part_mask = self.segmentation_map == part_id
+        part_faces = self.faces[part_mask]
+        part_vertex_ids = np.unique(part_faces)
+        part_vertices = self.vertices[part_vertex_ids]
+
+        # Translate vertices to origin
+        part_vertices -= origin
+
+        # Create rotation matrix
+        axis = axis / np.linalg.norm(axis)
+        cos_angle = np.cos(angle)
+        sin_angle = np.sin(angle)
+        one_minus_cos = 1 - cos_angle
+        x, y, z = axis
+        rotation_matrix = np.array([
+            [cos_angle + x*x*one_minus_cos, x*y*one_minus_cos - z*sin_angle, x*z*one_minus_cos + y*sin_angle],
+            [y*x*one_minus_cos + z*sin_angle, cos_angle + y*y*one_minus_cos, y*z*one_minus_cos - x*sin_angle],
+            [z*x*one_minus_cos - y*sin_angle, z*y*one_minus_cos + x*sin_angle, cos_angle + z*z*one_minus_cos]
+        ])
+
+        part_vertices = np.dot(part_vertices, rotation_matrix.T)
+
+        # Translate vertices back from origin
+        part_vertices += origin
+        self.vertices[part_vertex_ids] = part_vertices
+
+        if not modify_geometry:
+            # Modify only the matrix (both for pygltflib.GLTF2 and self.nodes)
+            part_nodes = self.node_map[part_mask]
+            unique_part_nodes = np.unique(part_nodes)
+            # Check if unique nodes are exclusive to part
+            for node in unique_part_nodes:
+                node_mask = self.node_map == node
+                if np.any(np.logical_and(node_mask, np.logical_xor(node_mask, part_mask))):
+                    raise ValueError("Nodes are not exclusive to the part. Set modify_geometry to True to modify part geometry directly.")
+            for node in unique_part_nodes:
+                if self.gltf2.nodes[node].matrix is None:
+                    node_matrix = np.eye(4)
+                else:
+                    node_matrix = np.asarray(self.gltf2.nodes[node].matrix)
+                    if node_matrix.shape != (4, 4):
+                        if len(node_matrix) == 16:
+                            node_matrix = node_matrix.reshape((4, 4))
+                rotation_matrix_4x4 = np.eye(4)
+                rotation_matrix_4x4[:3, :3] = rotation_matrix
+                translation_to_origin = np.eye(4)
+                translation_to_origin[:3, 3] = -origin
+                translation_back = np.eye(4)
+                translation_back[:3, 3] = origin
+                transformation_matrix = translation_back @ rotation_matrix_4x4 @ translation_to_origin
+                self.gltf2.nodes[node].matrix = (node_matrix @ transformation_matrix.T).flatten().tolist()
+        else:
+            self.original_vertices[part_vertex_ids] = part_vertices
+            # Now also modify self.gltf2 (pygltflib.GLTF2) with updated vertices
+            blobs = [self.gltf2.binary_blob()]
+            buffer_offset = len(blobs[0])
+
+            for mesh_index, mesh in enumerate(self.gltf2.meshes):
+                for primitive_index, primitive in enumerate(mesh.primitives):
+                    primitive_mask = (self.primitive_map == primitive_index) & (self.mesh_map == mesh_index)
+                    primitive_faces = self.faces[primitive_mask]
+                    position_accessor = self.gltf2.accessors[primitive.attributes.POSITION]
+                    vertex_count = position_accessor.count
+                    vertex_positions = np.zeros((vertex_count, 3), dtype=np.float32)
+                    offset = -1
+                    for face in primitive_faces:
+                        if offset == -1:
+                            offset = np.min(face)
+                        vertex_positions[face - offset] = self.vertices[face]
+
+                    byte_length = vertex_positions.nbytes
+                    new_buffer_view = pygltflib.BufferView(
+                        buffer=0,
+                        byteOffset=buffer_offset,
+                        byteLength=byte_length
+                    )
+
+                    buffer_offset += byte_length
+                    buffer_view_index = len(self.gltf2.bufferViews)
+                    self.gltf2.bufferViews.append(new_buffer_view)
+
+                    position_blob = struct.pack(f"{len(vertex_positions) * 3}f", *vertex_positions.flatten().tolist())
+                    blobs.append(position_blob)
+
+                    position_accessor.bufferView = buffer_view_index
+                    position_accessor.byteOffset = 0
+                    position_accessor.count = len(vertex_positions)
+                    position_accessor.max = vertex_positions.max(axis=0).tolist()
+                    position_accessor.min = vertex_positions.min(axis=0).tolist()
+
+            self.gltf2.set_binary_blob(b"".join(blobs))
+
+    def keep_faces(self, tokeep_mask: np.ndarray):
+        """
+        Keep only the faces specified by the mask.
+        Args:
+            tokeep_mask: np.ndarray, the mask of faces to keep
+        """
+        # Update the scene graph structures first
+        toremove_mask = np.logical_not(tokeep_mask)
+        nodes_to_be_updated = np.unique(self.node_map[toremove_mask])
+        total_vertex_left_counter = 0
+        for node_id in nodes_to_be_updated:
+            node = self.node_lookup[node_id]["node"]
+            mesh = node.mesh
+            updated_primitives = []
+            updated_ids = []
+            updated_pygltflib_data = {}
+            for primitive_id, primitive in enumerate(mesh.primitives):
+                primitive_mask = (self.primitive_map == primitive_id) & (self.mesh_map == mesh.id)
+                primitive_keep_faces_mask = primitive_mask & tokeep_mask
+                primitive_keep_faces_mask_local = primitive_keep_faces_mask[primitive_mask]
+                primitive_faces = self.faces[primitive_mask]
+                primitive_faces_tokeep = primitive_faces[primitive_keep_faces_mask_local]
+                # print(f"Node {node_id}, Mesh {mesh.id}, Primitive {primitive_id}, Faces {len(primitive_faces)} -> any kept faces {np.any(primitive_keep_faces_mask)}, reduction {len(primitive_faces) - np.sum(primitive_keep_faces_mask)}")
+                if np.any(primitive_keep_faces_mask) and not np.all(primitive_keep_faces_mask):
+                    primitive_local_faces_with_offset = primitive_faces_tokeep - np.min(primitive_faces)
+                    primitive_local_faces_with_offset_idx = np.sort(np.unique(primitive_local_faces_with_offset.flatten()))
+                    # Partially remove faces and other attributes
+                    # Handles POSITION, COLOR_0, NORMAL, TEXCOORD_0
+                    for attribute_name, attribute_data in primitive.attributes.items():
+                        if attribute_data is not None:
+                            primitive.attributes[attribute_name] = attribute_data[primitive_local_faces_with_offset_idx]
+                            # print(f"Attribute {attribute_name} shape {attribute_data.shape} -> {primitive.attributes[attribute_name].shape}")
+                            if attribute_name == "POSITION":
+                                total_vertex_left_counter += len(primitive_local_faces_with_offset_idx)
+                    updated_primitives.append(primitive)
+                    updated_ids.append(primitive_id)
+                    # Update primitive map, it will be shrinked later
+                    self.primitive_map[primitive_mask] = len(updated_primitives) - 1
+
+                    # Also update self.gltf2 (pygltflib.GLTF2) with updated attributes
+                    blobs = [self.gltf2.binary_blob()]
+                    buffer_offset = len(blobs[0])
+
+                    attribute_accessors = {}
+
+                    for attribute_name, attribute_data in primitive.attributes.items():
+                        if attribute_data is not None:
+                            attribute_blob = struct.pack(f"{len(attribute_data.flatten())}f", *attribute_data.flatten().tolist())
+                            blobs.append(attribute_blob)
+                            byte_length = len(attribute_blob)
+                            new_buffer_view = pygltflib.BufferView(
+                                buffer=0,
+                                byteOffset=buffer_offset,
+                                byteLength=byte_length
+                            )
+
+                            buffer_offset += byte_length
+                            buffer_view_index = len(self.gltf2.bufferViews)
+                            self.gltf2.bufferViews.append(new_buffer_view)
+
+                            accessor = pygltflib.Accessor(
+                                bufferView=buffer_view_index,
+                                componentType=pygltflib.FLOAT,
+                                count=len(attribute_data),
+                                type=pygltflib.VEC2 if attribute_name == "TEXCOORD_0" else (pygltflib.VEC4 if attribute_name == "COLOR_0" else pygltflib.VEC3),
+                                max=attribute_data.max(axis=0).tolist(),
+                                min=attribute_data.min(axis=0).tolist()
+                            )
+                            accessor_index = len(self.gltf2.accessors)
+                            self.gltf2.accessors.append(accessor)
+                            attribute_accessors[attribute_name] = accessor_index
+                            # print(f"Updating attribute {attribute_name} accessor {accessor_index} with {accessor.count} vertices. Max {accessor.max}, Min {accessor.min}. Buffer view {buffer_view_index}, Byte length {byte_length}, Buffer offset {buffer_offset}")
+
+                    # Handle indices
+                    pygltflib_primitive = self.gltf2.meshes[mesh.id].primitives[primitive_id]
+                    indices_accessor_idx = pygltflib_primitive.indices
+                    indices_accessor_index = None
+                    if indices_accessor_idx is not None and np.any(primitive_keep_faces_mask):
+                        # primitive_local_faces_with_offset_idx is a reference between new vertex ids [0->N] (indices) and old vertex ids [K->M] (values)
+                        # Create new indices data
+                        indices_data = np.zeros_like(primitive_local_faces_with_offset)
+                        for new_vertex_id, old_vertex_id in enumerate(primitive_local_faces_with_offset_idx):
+                            indices_data[primitive_local_faces_with_offset == old_vertex_id] = new_vertex_id
+                        indices_data = indices_data.flatten()
+                        indices_blob = struct.pack(f"{len(indices_data)}I", *indices_data.tolist())
+                        blobs.append(indices_blob)
+                        indices_byte_length = len(indices_blob)
+                        new_indices_buffer_view = pygltflib.BufferView(
+                            buffer=0,
+                            byteOffset=buffer_offset,
+                            byteLength=indices_byte_length
+                        )
+
+                        buffer_offset += indices_byte_length
+                        indices_buffer_view_index = len(self.gltf2.bufferViews)
+                        self.gltf2.bufferViews.append(new_indices_buffer_view)
+
+                        indices_accessor = pygltflib.Accessor(
+                            bufferView=indices_buffer_view_index,
+                            componentType=pygltflib.UNSIGNED_INT,
+                            count=len(indices_data),
+                            type=pygltflib.SCALAR,
+                            max=[int(indices_data.max())],
+                            min=[int(indices_data.min())]
+                        )
+                        indices_accessor_index = len(self.gltf2.accessors)
+                        self.gltf2.accessors.append(indices_accessor)
+                        # print(f"Updating indices accessor {indices_accessor_index} with {indices_accessor.count} indices. Max {indices_accessor.max}, Min {indices_accessor.min}. Buffer view {indices_buffer_view_index}, Byte length {indices_byte_length}, Buffer offset {buffer_offset}")
+                    updated_pygltflib_data[primitive_id] = (attribute_accessors, indices_accessor_index)
+                    self.gltf2.set_binary_blob(b"".join(blobs))
+                elif np.all(primitive_keep_faces_mask):
+                    # Keep all faces
+                    pygltflib_primitive = self.gltf2.meshes[mesh.id].primitives[primitive_id]
+                    updated_primitives.append(primitive)
+                    updated_ids.append(primitive_id)
+                    updated_pygltflib_data[primitive_id] = (pygltflib_primitive.attributes, pygltflib_primitive.indices)
+            # print(f"Old primitives {len(mesh.primitives)} -> New primitives {len(updated_primitives)}")
+            # Update mesh if the number of primitives is changed
+            if len(updated_primitives) == 0:
+                self.mesh_lookup.pop(mesh.id)
+                new_mesh_lookup = {}
+                for other_mesh_id, other_mesh in self.mesh_lookup.items():
+                    if other_mesh_id > mesh.id:
+                        other_mesh_id -= 1
+                        new_mesh_lookup[other_mesh_id] = other_mesh
+                    else:
+                        new_mesh_lookup[other_mesh_id] = other_mesh
+                self.mesh_lookup = new_mesh_lookup
+                self.mesh_map[self.mesh_map == mesh.id] = -1
+                self.mesh_map[self.mesh_map > mesh.id] -= 1
+                self.gltf2.meshes.pop(mesh.id)
+                for other_mesh in self.mesh_lookup.values():
+                    if other_mesh.id > mesh.id:
+                        other_mesh.id -= 1
+                for other_node in self.gltf2.nodes:
+                    if other_node.mesh is not None:
+                        if other_node.mesh == mesh.id:
+                            other_node.mesh = None
+                for other_node in self.gltf2.nodes:
+                    if other_node.mesh is not None:
+                        if other_node.mesh > mesh.id:
+                            other_node.mesh -= 1
+            else:
+                mesh.primitives = updated_primitives
+                self.mesh_lookup[mesh.id].primitives = updated_primitives
+                self.gltf2.meshes[mesh.id].primitives = [
+                    pygltflib.Primitive(
+                        attributes={key: accessor for key, accessor in attribute_accessors.items()},
+                        indices=indices_accessor_index,
+                        material=pygltflib_primitive.material
+                    ) for attribute_accessors, indices_accessor_index in updated_pygltflib_data.values()
+                ]
+                # print(f"Mesh {mesh.id}, Primitives {len(mesh.primitives)} -> {len(updated_primitives)} indices {indices_accessor_index}")
+        # print(f"Total vertices left {total_vertex_left_counter}")
+        self.faces = self.faces[tokeep_mask]
+        self.primitive_map = self.primitive_map[tokeep_mask]
+        self.mesh_map = self.mesh_map[tokeep_mask]
+        self.node_map = self.node_map[tokeep_mask]
+        if self.has_segmentation:
+            self.segmentation_map = self.segmentation_map[tokeep_mask]
+        if self.has_precomputed_segmentation:
+            self.precomputed_segmentation_map = self.precomputed_segmentation_map[tokeep_mask]
 
     def __str__(self):
         class_dict = {"len(self.nodes)": len(self.nodes),
