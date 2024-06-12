@@ -11,6 +11,7 @@ import meshcat
 import meshcat.geometry as g
 import meshcat.transformations as tf
 import numpy as np
+import open3d as o3d
 import pygltflib
 import trimesh
 from PIL import Image
@@ -361,10 +362,15 @@ class gltfScene():
                         new_primitive = Primitive(attributes=attributes)
                         # TODO handle properly and add default material
                 else:
-                    material = self.gltf2.materials[pygltflib_primitive.material]
-                    baseColorFactor = material.pbrMetallicRoughness.baseColorFactor
-                    metallicFactor = material.pbrMetallicRoughness.metallicFactor
-                    roughnessFactor = material.pbrMetallicRoughness.roughnessFactor
+                    if pygltflib_primitive.material:
+                        material = self.gltf2.materials[pygltflib_primitive.material]
+                        baseColorFactor = material.pbrMetallicRoughness.baseColorFactor
+                        metallicFactor = material.pbrMetallicRoughness.metallicFactor
+                        roughnessFactor = material.pbrMetallicRoughness.roughnessFactor
+                    else:
+                        baseColorFactor = [1, 1, 1, 1]
+                        metallicFactor = 0
+                        roughnessFactor = 0.5
                     new_primitive = Primitive(
                         attributes=attributes,
                         material=PBRMaterial(baseColorFactor=baseColorFactor,
@@ -565,7 +571,7 @@ class gltfScene():
             mesh_id = segment["meshIndex"]
             seg_id = segment["segIndex"]
             current_mesh = np.where(self.mesh_map == mesh_id)[0]
-
+            # print(f"Mesh ID: {mesh_id}, Seg ID: {seg_id}")
             for tri_data in segment["triIndex"]:
                 if type(tri_data) is int:
                     self.precomputed_segmentation_map[current_mesh[tri_data]] = seg_id
@@ -940,8 +946,8 @@ class gltfScene():
             current_samples = n_samples
         triangles = self.vertices[self.faces]
 
-        bbox_min = np.min(triangles, axis=1)
-        bbox_max = np.max(triangles, axis=1)
+        bbox_min = np.min(triangles, axis=0)
+        bbox_max = np.max(triangles, axis=0)
 
         if recenter:
             center = (bbox_min + bbox_max) / 2
@@ -978,9 +984,9 @@ class gltfScene():
 
         for mesh_id in np.unique(self.mesh_map):
             mesh = self.mesh_lookup[mesh_id]
-            print(f"Mesh {mesh_id}, {mesh}")
+            # print(f"Mesh {mesh_id}, {mesh}")
             for primitive_id, primitive in enumerate(mesh.primitives):
-                print(f"Primitive {primitive_id}, {primitive}")
+                # print(f"Primitive {primitive_id}, {primitive}")
                 primitive_mask = (self.primitive_map == primitive_id) & (self.mesh_map == mesh_id)
                 primitive_idx = np.where(primitive_mask)[0]
                 local_triangle_ids = np.repeat(np.arange(len(primitive_idx)), triangle_samples[primitive_mask])
@@ -1034,13 +1040,13 @@ class gltfScene():
             semantic_ids = -np.ones_like(global_triangle_ids, dtype=np.int_)
             instance_ids = -np.ones_like(global_triangle_ids, dtype=np.int_)
 
-        import open3d as o3d
+        """import open3d as o3d
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
         pcd.colors = o3d.utility.Vector3dVector(colors[:, :3])
         pcd.normals = o3d.utility.Vector3dVector(normals)
         # Draw with normals
-        o3d.visualization.draw_geometries([pcd], point_show_normal=True)
+        o3d.visualization.draw_geometries([pcd], point_show_normal=True)"""
 
         if fpd:
             # Generate downsampling mask for Farthest Point Downsampling
@@ -1053,7 +1059,47 @@ class gltfScene():
                     distances = np.minimum(distances, np.linalg.norm(points - points[farthest_pts_idx[i]], axis=1))
                 return farthest_pts_idx
 
+            def farthest_point_downsampling_idx_opt(points, n_samples):
+                n_points = len(points)
+                farthest_pts_idx = np.zeros(n_samples, dtype=int)
+                farthest_pts_idx[0] = np.random.randint(n_points)
+                distances = np.full(n_points, np.inf)
+
+                for i in range(1, n_samples):
+                    last_point = points[farthest_pts_idx[i-1]]
+                    new_distances = np.linalg.norm(points - last_point, axis=1)
+                    distances = np.minimum(distances, new_distances)
+                    farthest_pts_idx[i] = np.argmax(distances)
+
+                return farthest_pts_idx
+
+            def farthest_point_downsampling_idx_o3(points, n_samples):
+                # Convert points to Open3D PointCloud
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(points)
+
+                # Perform farthest point downsampling
+                sampled_pcd = pcd.farthest_point_down_sample(n_samples)
+
+                # Extract the sampled points
+                sampled_points = np.asarray(sampled_pcd.points)
+
+                # Find the indices of the sampled points in the original point cloud
+                sampled_indices = np.array([np.where((points == point).all(axis=1))[0][0] for point in sampled_points])
+
+                return sampled_indices
+
+            # time and compare
+            """import time
+            start = time.time()
             farthest_pts_idx = farthest_point_downsampling_idx(samples, n_samples)
+            print(f"Farthest Point Downsampling took {time.time() - start} seconds.")
+            start = time.time()
+            farthest_pts_idx = farthest_point_downsampling_idx_opt(points, n_samples)
+            print(f"Optimized Farthest Point Downsampling took {time.time() - start} seconds.")
+            start = time.time()"""
+            farthest_pts_idx = farthest_point_downsampling_idx_o3(points, n_samples)
+            # print(f"Open3D Farthest Point Downsampling took {time.time() - start} seconds.")
             """import open3d as o3d
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(points[farthest_pts_idx])
@@ -1140,7 +1186,7 @@ class gltfScene():
         return_dict["instance_ids"] = instance_ids
         return_dict["vertex_ids"] = vertex_ids
         return_dict["original_points"] = original_points
-        import open3d as o3d
+        """import open3d as o3d
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
         pcd.normals = o3d.utility.Vector3dVector(normals)
@@ -1148,9 +1194,9 @@ class gltfScene():
         o3d.visualization.draw_geometries([pcd])
         semantic_color_map = np.random.rand(len(np.arange(np.max(list(semantic_map.values())))) + 1, 3)
         semantic_colors = semantic_color_map[semantic_ids]
-        print(f"Points shape {points.shape}\nColors shape {colors.shape}\nNormals shape {normals.shape}\nSemantic ids shape {semantic_ids.shape}\nInstance ids shape {instance_ids.shape}\nSeg ids shape {seg_indices.shape}\nNode indices shape {node_indices.shape}\nMesh indices shape {mesh_indices.shape}\nPrimitive indices shape {primitive_indices.shape}\nLocal tri indices shape {local_tri_indices.shape}\nGlobal tri indices shape {global_tri_indices.shape}\nVertex ids shape {vertex_ids.shape}")
-        if type(vertices) is np.ndarray:
-            print(f"\n\nVertex points shape {vertices.shape}\nVertex colors shape {vertex_colors.shape}\nVertex normals shape {vertex_normals.shape}\nVertex semantic ids shape {vertex_semantic_ids.shape}\nVertex instance ids shape {vertex_instance_ids.shape}\nVertex seg ids shape {vertex_seg_indices.shape}\nVertex node indices shape {vertex_node_indices.shape}\nVertex mesh indices shape {vertex_mesh_indices.shape}\nVertex primitive indices shape {vertex_primitive_indices.shape}\nVertex local tri indices shape {vertex_local_tri_indices.shape}\nVertex global tri indices shape {vertex_global_tri_indices.shape}")
+        # print(f"Points shape {points.shape}\nColors shape {colors.shape}\nNormals shape {normals.shape}\nSemantic ids shape {semantic_ids.shape}\nInstance ids shape {instance_ids.shape}\nSeg ids shape {seg_indices.shape}\nNode indices shape {node_indices.shape}\nMesh indices shape {mesh_indices.shape}\nPrimitive indices shape {primitive_indices.shape}\nLocal tri indices shape {local_tri_indices.shape}\nGlobal tri indices shape {global_tri_indices.shape}\nVertex ids shape {vertex_ids.shape}")
+        # if type(vertices) is np.ndarray:
+        #    print(f"\n\nVertex points shape {vertices.shape}\nVertex colors shape {vertex_colors.shape}\nVertex normals shape {vertex_normals.shape}\nVertex semantic ids shape {vertex_semantic_ids.shape}\nVertex instance ids shape {vertex_instance_ids.shape}\nVertex seg ids shape {vertex_seg_indices.shape}\nVertex node indices shape {vertex_node_indices.shape}\nVertex mesh indices shape {vertex_mesh_indices.shape}\nVertex primitive indices shape {vertex_primitive_indices.shape}\nVertex local tri indices shape {vertex_local_tri_indices.shape}\nVertex global tri indices shape {vertex_global_tri_indices.shape}")
         pcd.colors = o3d.utility.Vector3dVector(semantic_colors)
         o3d.visualization.draw_geometries([pcd])
         isntance_color_map = np.random.rand(len(np.arange(np.max(instance_ids))) + 1, 3)
@@ -1162,13 +1208,18 @@ class gltfScene():
         pcd.colors = o3d.utility.Vector3dVector(segments_colors)
         o3d.visualization.draw_geometries([pcd])
         node_color_map = np.random.rand(len(np.unique(node_indices)), 3)
-        node_colors = node_color_map[node_indices]
+        node_colors = np.zeros(points.shape)
+        for i, node in enumerate(np.unique(node_indices)):
+            node_colors[node_indices == node] = node_color_map[i]
         pcd.colors = o3d.utility.Vector3dVector(node_colors)
         o3d.visualization.draw_geometries([pcd])
         mesh_color_map = np.random.rand(len(np.unique(mesh_indices)), 3)
-        mesh_colors = mesh_color_map[mesh_indices]
+        mesh_colors = np.zeros(points.shape)
+        for i, mesh in enumerate(np.unique(mesh_indices)):
+            mesh_colors[mesh_indices == mesh] = mesh_color_map[i]
         pcd.colors = o3d.utility.Vector3dVector(mesh_colors)
-        o3d.visualization.draw_geometries([pcd])
+        o3d.visualization.draw_geometries([pcd])"""
+        return return_dict
 
     def export_gltf2(self, export_path):
         """
