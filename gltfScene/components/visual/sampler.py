@@ -68,7 +68,13 @@ class Sampler():
         elif self.wrapT == 33648:
             v[v > 1] = 1 - v[v > 1] % 1
             v[v < 0] = -v[v < 0] % 1
+
+        # Subtract epsilon to avoid out of bounds
+        u -= np.finfo(np.float32).eps
+        v -= np.finfo(np.float32).eps
+
         # Sample the image
         u = (u * img.width).astype(np.int32)
         v = (v * img.height).astype(np.int32)
+
         return np.array(img, dtype=np.float32)[v, u] / 255.0
