@@ -1,7 +1,7 @@
 import os
 import tempfile
 
-import pygltflib
+from pygltflib import GLTF2
 
 from .gltfScene import gltfScene
 
@@ -21,7 +21,7 @@ def load(
     Returns:
         scene: pygltftoolkit.gltfScene object, the glTF 2.0 scene.
     """
-    scene = pygltflib.GLTF2().load(path)
+    scene = GLTF2().load(path)
 
     # We support only a single scene in glTF file.
     # Multiple scenes are rarely used and it was even proposed to remove them from the glTF 2.0 specification.
@@ -34,7 +34,7 @@ def load(
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
             scene.save_binary(temp_file.name)
             temp_file_path = temp_file.name
-        scene = pygltflib.GLTF2().load(temp_file_path)
+        scene = GLTF2().load(temp_file_path)
         os.remove(temp_file_path)
 
     gltf = gltfScene(scene)

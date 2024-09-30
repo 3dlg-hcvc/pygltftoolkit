@@ -13,6 +13,7 @@ import meshcat.transformations as tf
 import numpy as np
 import open3d as o3d
 import pygltflib
+import torch
 import trimesh
 from PIL import Image
 from pygltflib import GLTF2
@@ -280,6 +281,7 @@ class gltfScene():
 
         if pygltflib_node.mesh is not None:
             node_vertices = np.empty((0, 3), dtype=np.float32)
+            node_normals = np.empty((0, 3), dtype=np.float32)
 
             pygltflib_mesh = self.gltf2.meshes[pygltflib_node.mesh]
             primitives = []
@@ -315,7 +317,7 @@ class gltfScene():
                         self.no_transform_vertices = np.vstack((self.no_transform_vertices, position))
                         self._global_vertex_counter += len(position)
                     elif attribute_name == "NORMAL":
-                        self.normals = np.vstack((self.normals, attributes[attribute_name]))
+                        node_normals = np.vstack((node_normals, attributes[attribute_name]))
                 if "COLOR_0" in attributes:
                     colors_data = attributes["COLOR_0"]
                     new_primitive = Primitive(
@@ -324,45 +326,56 @@ class gltfScene():
                     )
                 elif "TEXCOORD_0" in attributes:
                     material = self.gltf2.materials[pygltflib_primitive.material]
-                    if material.pbrMetallicRoughness.baseColorTexture is not None:
-                        texture = self.gltf2.textures[material.pbrMetallicRoughness.baseColorTexture.index]
-                        image = self.gltf2.images[texture.source]
-                        bufferView = self.gltf2.bufferViews[image.bufferView]
-                        data = copy.deepcopy(self.gltf2).binary_blob()
-
-                        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                            # Adopted from https://gitlab.com/dodgyville/pygltflib/-/blob/v1.16.2/pygltflib/__init__.py?ref_type=tags#L793
-                            temp_file.write(data[bufferView.byteOffset:bufferView.byteOffset + bufferView.byteLength])
-                            temp_file_path = temp_file.name
-
-                        with Image.open(temp_file_path) as pil_image:
-                            width, height = pil_image.size
-                            image_data = pil_image.convert("RGBA")
-
-                        os.remove(temp_file_path)
-
-                        texcoords = attributes["TEXCOORD_0"]
-                        texture_image = TextureImage(image=image_data, mimeType=image.mimeType, name=image.name)
-                        texture_material = TextureMaterial(image=texture_image, uv=texcoords, sampler=texture.sampler)
-                        new_primitive = Primitive(
-                            attributes=attributes,
-                            material=texture_material
-                        )
-                    elif material.pbrMetallicRoughness.baseColorFactor is not None:
-                        baseColorFactor = material.pbrMetallicRoughness.baseColorFactor
-                        metallicFactor = material.pbrMetallicRoughness.metallicFactor
-                        roughnessFactor = material.pbrMetallicRoughness.roughnessFactor
+                    if material.pbrMetallicRoughness is None:
+                        baseColorFactor = [1, 1, 1, 1]
+                        metallicFactor = 0
+                        roughnessFactor = 0.5
                         new_primitive = Primitive(
                             attributes=attributes,
                             material=PBRMaterial(baseColorFactor=baseColorFactor,
-                                                 metallicFactor=metallicFactor,
-                                                 roughnessFactor=roughnessFactor)
+                                                metallicFactor=metallicFactor,
+                                                roughnessFactor=roughnessFactor)
                         )
                     else:
-                        new_primitive = Primitive(attributes=attributes)
-                        # TODO handle properly and add default material
+                        if material.pbrMetallicRoughness.baseColorTexture is not None:
+                            texture = self.gltf2.textures[material.pbrMetallicRoughness.baseColorTexture.index]
+                            image = self.gltf2.images[texture.source]
+                            bufferView = self.gltf2.bufferViews[image.bufferView]
+                            data = copy.deepcopy(self.gltf2).binary_blob()
+
+                            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                                # Adopted from https://gitlab.com/dodgyville/pygltflib/-/blob/v1.16.2/pygltflib/__init__.py?ref_type=tags#L793
+                                temp_file.write(data[bufferView.byteOffset:bufferView.byteOffset + bufferView.byteLength])
+                                temp_file_path = temp_file.name
+
+                            with Image.open(temp_file_path) as pil_image:
+                                width, height = pil_image.size
+                                image_data = pil_image.convert("RGBA")
+
+                            os.remove(temp_file_path)
+
+                            texcoords = attributes["TEXCOORD_0"]
+                            texture_image = TextureImage(image=image_data, mimeType=image.mimeType, name=image.name)
+                            texture_material = TextureMaterial(image=texture_image, uv=texcoords, sampler=texture.sampler)
+                            new_primitive = Primitive(
+                                attributes=attributes,
+                                material=texture_material
+                            )
+                        elif material.pbrMetallicRoughness.baseColorFactor is not None:
+                            baseColorFactor = material.pbrMetallicRoughness.baseColorFactor
+                            metallicFactor = material.pbrMetallicRoughness.metallicFactor
+                            roughnessFactor = material.pbrMetallicRoughness.roughnessFactor
+                            new_primitive = Primitive(
+                                attributes=attributes,
+                                material=PBRMaterial(baseColorFactor=baseColorFactor,
+                                                    metallicFactor=metallicFactor,
+                                                    roughnessFactor=roughnessFactor)
+                            )
+                        else:
+                            new_primitive = Primitive(attributes=attributes)
+                            # TODO handle properly and add default material
                 else:
-                    if pygltflib_primitive.material:
+                    if pygltflib_primitive.material and self.gltf2.materials[pygltflib_primitive.material].pbrMetallicRoughness:
                         material = self.gltf2.materials[pygltflib_primitive.material]
                         baseColorFactor = material.pbrMetallicRoughness.baseColorFactor
                         metallicFactor = material.pbrMetallicRoughness.metallicFactor
@@ -395,6 +408,26 @@ class gltfScene():
             transformed_vertices = transformed_vertices[:, :3] / transformed_vertices[:, 3][:, np.newaxis]
 
             self.vertices = np.vstack((self.vertices, transformed_vertices))
+
+            # Transform normals
+            """ pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(transformed_vertices)
+            pcd.normals = o3d.utility.Vector3dVector(node_normals)
+            o3d.visualization.draw_geometries([pcd], point_show_normal=True)"""
+
+            if node_normals.shape[1] == 3:
+                normal_transform = np.linalg.inv(new_parent_transform[:3, :3]).T
+                transformed_normals = np.dot(node_normals, normal_transform)
+                # Renormalize the normals
+                norm = np.linalg.norm(transformed_normals, axis=1, keepdims=True)
+                transformed_normals = np.divide(transformed_normals, norm, where=norm != 0)
+                self.normals = np.vstack((self.normals, transformed_normals))
+            
+            """pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(transformed_vertices)
+            pcd.normals = o3d.utility.Vector3dVector(transformed_normals)
+            o3d.visualization.draw_geometries([pcd], point_show_normal=True)"""
+            
         else:
             new_mesh = None
         new_node = Node(
@@ -422,10 +455,10 @@ class gltfScene():
             stk_segmentation = json.load(f)
         for part in stk_segmentation["parts"]:
             if part is not None:
-                pid = int(part["pid"])
+                pid = int(part["pid"]) if "pid" in part else int(part["partId"])
                 label = part["label"]
                 trisegments = []
-                for seg_data in part["partInfo"]["meshTri"]:
+                for seg_data in part["partInfo"]["meshTri"] if "partInfo" in part else part["meshTri"]:
                     seg_mesh_index = int(seg_data["meshIndex"])
                     current_mesh = np.where(self.mesh_map == seg_mesh_index)[0]
                     for tri_data in seg_data["triIndex"]:
@@ -438,26 +471,43 @@ class gltfScene():
                         segIndex = seg_data["segIndex"]
                     trisegment = TriSegment(meshIndex=seg_mesh_index, triIndex=seg_data["triIndex"], segIndex=segIndex)
                     trisegments.append(trisegment)
-                new_part = SegmentationPart(pid=pid, name=part["name"], label=label, trisegments=trisegments)
+                new_part = SegmentationPart(pid=pid, name=part["name"] if "name" in part else part["label"], label=label, trisegments=trisegments)
                 self.segmentation_parts[pid] = new_part
 
-    def load_stk_segmentation_openable(self, stk_segmentation: str):
+    def load_stk_segmentation_openable(self, stk_segmentation: str, order=None, flattened=False):
         """
         Load the segmentation annotations produced by the STK. Loads parts for "openable" tasks, e.g. S2O.
         That is, involves additional annotation processing (e.g. combining handles with doors, etc.)
         Args:
             stk_segmentation: string, the path to the segmentation annotations produced by the STK
         """
+        if order is not None:
+            with open(order, "r") as f:
+                order = json.load(f)
+            stk_id_gltf_id_map = {}
+            stk_tri_gltf_tri_map = np.zeros((len(self.faces)), dtype=np.int_)
+            for correspondence in order["meshMapping"]:
+                stk_id_gltf_id_map[correspondence["index"]] = correspondence["meshIndex"]
+            stk_ids = np.sort(np.array(list(stk_id_gltf_id_map.keys())))
+            tri_covered = 0
+            for stk_id in stk_ids:
+                gltf_id = stk_id_gltf_id_map[stk_id]
+                stk_tri_gltf_tri_map[tri_covered:tri_covered + len(np.where(self.mesh_map == gltf_id)[0])] = np.where(self.mesh_map == gltf_id)[0]
+                tri_covered += len(np.where(self.mesh_map == gltf_id)[0])
+        else:
+            stk_tri_gltf_tri_map = np.arange(len(self.faces))
+
         self.has_segmentation = True
         self.segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
         with open(stk_segmentation, "r") as f:
             stk_segmentation = json.load(f)
         annotated_parts = {}
         base_part_id = None
+        pids_to_remove = []
         for part in stk_segmentation["parts"]:
             if part:
-                part_info = part["partInfo"]
-                part_label = part_info["label"]
+                part_info = part["partInfo"] if "partInfo" in part else part
+                part_label = part_info["label"] if "label" in part_info else part["label"]
                 pid = int(part_info["partId"])
                 if part_label in ["drawer", "door", "lid"]:
                     annotated_parts[pid] = part_label
@@ -466,30 +516,41 @@ class gltfScene():
                     base_part_id = int(part_info["partId"])
         for part in stk_segmentation["parts"]:
             if part:
-                part_info = part["partInfo"]
-                part_label = part_info["label"]
+                part_info = part["partInfo"] if "partInfo" in part else part
+                part_label = part_info["label"] if "label" in part_info else part["label"]
                 if part_label in ["bed", "bunk beds"]:
                     part_label = "base"
                 pid = int(part_info["partId"])
                 trisegments = []
                 for seg_data in part_info["meshTri"]:
                     seg_mesh_index = int(seg_data["meshIndex"])
-                    current_mesh = np.where(self.mesh_map == seg_mesh_index)[0]
+                    if order is None:
+                        current_mesh = np.where(self.mesh_map == seg_mesh_index)[0]
+                    else:
+                        current_mesh = np.where(self.mesh_map == stk_id_gltf_id_map[seg_mesh_index])[0]
                     for tri_data in seg_data["triIndex"]:
-                        if type(tri_data) is int:
-                            self.segmentation_map[current_mesh[tri_data]] = pid
-                        elif type(tri_data) is list:
-                            self.segmentation_map[current_mesh[tri_data[0]:tri_data[1]]] = pid
+                        if not flattened:
+                            if type(tri_data) is int:
+                                self.segmentation_map[current_mesh[tri_data]] = pid
+                            elif type(tri_data) is list:
+                                self.segmentation_map[current_mesh[tri_data[0]:tri_data[1]]] = pid
+                        else:
+                            if type(tri_data) is int:
+                                self.segmentation_map[stk_tri_gltf_tri_map[tri_data]] = pid
+                            elif type(tri_data) is list:
+                                self.segmentation_map[stk_tri_gltf_tri_map[tri_data[0]]:stk_tri_gltf_tri_map[tri_data[1]]] = pid
                     segIndex = None
                     if "segIndex" in seg_data:
                         segIndex = seg_data["segIndex"]
                     trisegment = TriSegment(meshIndex=seg_mesh_index, triIndex=seg_data["triIndex"], segIndex=segIndex)
                     trisegments.append(trisegment)
                 if part_label in ["drawer", "door", "lid"]:
-                    new_part = SegmentationPart(pid=pid, name=part["name"], label=part_label, trisegments=trisegments)
+                    new_part = SegmentationPart(pid=pid, name=part["name"] if "name" in part else part["label"], label=part_label, trisegments=trisegments)
                     self.segmentation_parts[pid] = new_part
+                elif part_label in ["unknown", "remove"]:
+                    pids_to_remove.append(pid)
                 else:
-                    if part_label in ["pillow", "quilt", "base"]:
+                    if part_label in ["pillow", "quilt", "base", "hinge"]:
                         if base_part_id in self.segmentation_parts:
                             self.segmentation_parts[base_part_id].trisegments.extend(trisegments)
                         else:
@@ -522,6 +583,10 @@ class gltfScene():
                             new_part = SegmentationPart(pid=connected_id, name=annotated_parts[connected_id], label=connected_to_label, trisegments=trisegments)
                             self.segmentation_parts[connected_id] = new_part
                         self.segmentation_map[self.segmentation_map == pid] = connected_id
+        merged_pids_to_remove_mask = np.zeros_like(self.segmentation_map, dtype=bool)
+        for pid in pids_to_remove:
+            merged_pids_to_remove_mask = np.logical_or(merged_pids_to_remove_mask, self.segmentation_map == pid)
+        # self.keep_faces(~merged_pids_to_remove_mask)
 
     def load_stk_articulation(self, stk_articulation: str):
         """
@@ -544,6 +609,8 @@ class gltfScene():
                     raise ValueError("Invalid JSON format.")
         if "annotation" in stk_articulation:
             stk_articulation = stk_articulation["annotation"]
+        if "data" in stk_articulation:
+            stk_articulation = stk_articulation["data"]
         for articulation in stk_articulation["articulations"]:
             pid = articulation["pid"]
             type = articulation["type"]
@@ -555,20 +622,32 @@ class gltfScene():
                                        axis=axis)
             self.articulation_parts[pid] = new_part
 
-    def load_stk_precomputed_segmentation(self, stk_precomputed_segmentation: str):
+    def load_stk_precomputed_segmentation(self, stk_precomputed_segmentation: str, mapping_path: str = None):
         """
         Load the precomputed segmentation annotations produced by the STK.
         Args:
             stk_precomputed_segmentation: string, the path to the precomputed segmentation annotations produced by
             the STK
+            mapping_path: string, the path to the mesh index mapping
         """
+        mapping = None
+        stk_id_gltf_id_map = None
+        if mapping_path:
+            stk_id_gltf_id_map = {}
+            with open(mapping_path, "r") as f:
+                mapping = json.load(f)
+            for meshMap in mapping["meshMapping"]:
+                stk_id_gltf_id_map[meshMap["index"]] = meshMap["meshIndex"]
         self.has_precomputed_segmentation = True
         self.precomputed_segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
         with open(stk_precomputed_segmentation, "r") as f:
             stk_precomputed_segmentation = json.load(f)
         trisegments = []
         for segment in stk_precomputed_segmentation["segmentation"]:
-            mesh_id = segment["meshIndex"]
+            if stk_id_gltf_id_map:
+                mesh_id = stk_id_gltf_id_map[segment["meshIndex"]]
+            else:
+                mesh_id = segment["meshIndex"]
             seg_id = segment["segIndex"]
             current_mesh = np.where(self.mesh_map == mesh_id)[0]
             # print(f"Mesh ID: {mesh_id}, Seg ID: {seg_id}")
@@ -583,13 +662,33 @@ class gltfScene():
             new_part = PrecomputedPart(seg_id, trisegments)
             self.precomputed_segmentation_parts[seg_id] = new_part
 
-    def load_stk_precomputed_segmentation_flattened(self, stk_precomputed_segmentation: str):
+    def load_stk_precomputed_segmentation_flattened(self, stk_precomputed_segmentation: str, mapping_path: str = None):
         """
         Load the precomputed segmentation annotations produced by the STK without respecting the mesh boundaries.
         Args:
             stk_precomputed_segmentation: string, the path to the precomputed segmentation annotations produced by
             the STK
+            mapping_path: string, the path to the mesh index mapping
         """
+        mapping = None
+        stk_id_gltf_id_map = None
+        stk_tri_gltf_tri_map = None
+        if mapping_path:
+            stk_id_gltf_id_map = {}
+            stk_tri_gltf_tri_map = np.zeros_like(self.mesh_map)
+            with open(mapping_path, "r") as f:
+                mapping = json.load(f)
+            for meshMap in mapping["meshMapping"]:
+                stk_id_gltf_id_map[meshMap["index"]] = meshMap["meshIndex"]
+            stk_ids = np.sort(np.asarray(stk_id_gltf_id_map.keys()))
+            tri_covered = 0
+            for stk_id in stk_ids:
+                gltf_id = stk_id_gltf_id_map[stk_id]
+                stk_tri_gltf_tri_map[tri_covered:tri_covered + len(np.where(self.mesh_map == gltf_id)[0])] = np.where(self.mesh_map == gltf_id)[0]
+                tri_covered += len(np.where(self.mesh_map == gltf_id)[0])
+        else:
+            stk_tri_gltf_tri_map = np.arange(len(self.mesh_map))
+
         self.has_precomputed_segmentation = True
         self.precomputed_segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
         with open(stk_precomputed_segmentation, "r") as f:
@@ -600,9 +699,9 @@ class gltfScene():
 
             for tri_data in segment["triIndex"]:
                 if type(tri_data) is int:
-                    self.precomputed_segmentation_map[tri_data] = seg_id
+                    self.precomputed_segmentation_map[stk_tri_gltf_tri_map[tri_data]] = seg_id
                 elif type(tri_data) is list:
-                    self.precomputed_segmentation_map[tri_data[0]:tri_data[1]] = seg_id
+                    self.precomputed_segmentation_map[stk_tri_gltf_tri_map[tri_data[0]:tri_data[1]]] = seg_id
 
             trisegment = TriSegment(meshIndex=-1, triIndex=tri_data, segIndex=seg_id)
             trisegments.append(trisegment)
@@ -692,6 +791,7 @@ class gltfScene():
         self.gltf2.materials = []
 
         for mesh_index, mesh in enumerate(self.gltf2.meshes):
+            # print(self.mesh_lookup[mesh_index])
             for primitive_index, primitive in enumerate(mesh.primitives):
                 primitive_mask = (self.primitive_map == primitive_index) & (self.mesh_map == mesh_index)
                 primitive_faces = self.faces[primitive_mask]
@@ -709,8 +809,9 @@ class gltfScene():
                 self.gltf2.materials.append(material)
 
                 primitive.material = material_index
+                # print(self.mesh_lookup[mesh_index].primitives[primitive_index])
 
-                position_accessor = self.gltf2.accessors[primitive.attributes.POSITION]
+                position_accessor = self.gltf2.accessors[primitive.attributes.POSITION] if not type(primitive.attributes) == dict else self.gltf2.accessors[primitive.attributes['POSITION']]
                 vertex_count = position_accessor.count
                 vertex_colors = np.zeros((vertex_count, 4), dtype=np.float32)
                 offset = -1
@@ -924,7 +1025,7 @@ class gltfScene():
         image = vis.get_image(width, height)
         image.save(output_path, format='PNG')
 
-    def sample_uniform(self, n_samples: int, semantic_map: dict = None, recenter=False, rescale=False, vertices=False, fpd=False, oversample: int = 0, allow_nonuniform: bool = True) -> dict:
+    def sample_uniform(self, n_samples: int, semantic_map: dict = None, recenter=False, rescale=False, vertices=False, fpd=False, oversample: int = 0, allow_nonuniform: bool = True, voxel: bool = False) -> dict:
         """
         Sample uniform point cloud from the scene.
         Args:
@@ -1015,8 +1116,19 @@ class gltfScene():
                     raise ValueError("Primitive must have colors, baseColorFactor or texture.")
 
         # Interpolate normals from barycentric coordinates
-        normals = np.sum(self.normals[self.faces[global_triangle_ids]] * barycentric_coords[:, :, np.newaxis], axis=1)
+        # normals = np.sum(self.normals[self.faces[global_triangle_ids]] * barycentric_coords[:, :, np.newaxis], axis=1)
+        # normals /= np.linalg.norm(normals, axis=1)[:, np.newaxis]
+
+        # Calculate face normals as average of vertex normals
+        face_normals = np.mean(self.normals[self.faces], axis=1)
+        face_normals /= np.linalg.norm(face_normals, axis=1)[:, np.newaxis]
+
+        # Assign face normals to sampled points
+        normals = face_normals[global_triangle_ids]
+
+        # Ensure normals are unit vectors (they should be, but it's good to double-check)
         normals /= np.linalg.norm(normals, axis=1)[:, np.newaxis]
+
 
         node_indices = self.node_map[global_triangle_ids]
         mesh_indices = self.mesh_map[global_triangle_ids]
@@ -1047,64 +1159,42 @@ class gltfScene():
         pcd.normals = o3d.utility.Vector3dVector(normals)
         # Draw with normals
         o3d.visualization.draw_geometries([pcd], point_show_normal=True)"""
-
         if fpd:
-            # Generate downsampling mask for Farthest Point Downsampling
-            def farthest_point_downsampling_idx(points, n_samples):
-                farthest_pts_idx = np.zeros(n_samples, dtype=int)
-                farthest_pts_idx[0] = np.random.randint(len(points))
-                distances = np.linalg.norm(points - points[farthest_pts_idx[0]], axis=1)
-                for i in range(1, n_samples):
-                    farthest_pts_idx[i] = np.argmax(distances)
-                    distances = np.minimum(distances, np.linalg.norm(points - points[farthest_pts_idx[i]], axis=1))
-                return farthest_pts_idx
+            def farthest_point_downsampling_idx_pointops(points, n_samples):
+                import pointops
 
-            def farthest_point_downsampling_idx_opt(points, n_samples):
-                n_points = len(points)
-                farthest_pts_idx = np.zeros(n_samples, dtype=int)
-                farthest_pts_idx[0] = np.random.randint(n_points)
-                distances = np.full(n_points, np.inf)
+                points_tensor = torch.from_numpy(points).float().cuda()
 
-                for i in range(1, n_samples):
-                    last_point = points[farthest_pts_idx[i-1]]
-                    new_distances = np.linalg.norm(points - last_point, axis=1)
-                    distances = np.minimum(distances, new_distances)
-                    farthest_pts_idx[i] = np.argmax(distances)
+                N = points.shape[0]
+                offset = torch.tensor([N], device='cuda')
 
-                return farthest_pts_idx
+                new_offset = torch.tensor([n_samples], device='cuda')
 
-            def farthest_point_downsampling_idx_o3(points, n_samples):
-                # Convert points to Open3D PointCloud
-                pcd = o3d.geometry.PointCloud()
-                pcd.points = o3d.utility.Vector3dVector(points)
+                sampled_indices = pointops.farthest_point_sampling(points_tensor, offset, new_offset)
 
-                # Perform farthest point downsampling
-                sampled_pcd = pcd.farthest_point_down_sample(n_samples)
+                sampled_indices_np = sampled_indices.cpu().numpy()
 
-                # Extract the sampled points
-                sampled_points = np.asarray(sampled_pcd.points)
+                return sampled_indices_np
 
-                # Find the indices of the sampled points in the original point cloud
-                sampled_indices = np.array([np.where((points == point).all(axis=1))[0][0] for point in sampled_points])
+            if voxel:
+                # Select every 5th index
+                sampled_indices = np.arange(len(points))[::10]
+                points = points[sampled_indices]
+                colors = colors[sampled_indices]
+                normals = normals[sampled_indices]
+                node_indices = node_indices[sampled_indices]
+                mesh_indices = mesh_indices[sampled_indices]
+                primitive_indices = primitive_indices[sampled_indices]
+                local_tri_indices = local_tri_indices[sampled_indices]
+                global_tri_indices = global_tri_indices[sampled_indices]
+                seg_indices = seg_indices[sampled_indices]
+                semantic_ids = semantic_ids[sampled_indices]
+                instance_ids = instance_ids[sampled_indices]
+                barycentric_coords = barycentric_coords[sampled_indices]
+                vertex_ids = vertex_ids[sampled_indices]
 
-                return sampled_indices
+            farthest_pts_idx = farthest_point_downsampling_idx_pointops(points, n_samples)
 
-            # time and compare
-            """import time
-            start = time.time()
-            farthest_pts_idx = farthest_point_downsampling_idx(samples, n_samples)
-            print(f"Farthest Point Downsampling took {time.time() - start} seconds.")
-            start = time.time()
-            farthest_pts_idx = farthest_point_downsampling_idx_opt(points, n_samples)
-            print(f"Optimized Farthest Point Downsampling took {time.time() - start} seconds.")
-            start = time.time()"""
-            farthest_pts_idx = farthest_point_downsampling_idx_o3(points, n_samples)
-            # print(f"Open3D Farthest Point Downsampling took {time.time() - start} seconds.")
-            """import open3d as o3d
-            pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(points[farthest_pts_idx])
-            pcd.colors = o3d.utility.Vector3dVector(colors[farthest_pts_idx, :3])
-            o3d.visualization.draw_geometries([pcd])"""
             points = points[farthest_pts_idx]
             colors = colors[farthest_pts_idx]
             normals = normals[farthest_pts_idx]
@@ -1139,9 +1229,11 @@ class gltfScene():
                 semantic_labels = np.array([part_label_map[seg_id] for seg_id in self.segmentation_map])
                 vertex_semantic_ids = np.array([semantic_map[label] for label in semantic_labels[vertex_face_correspondence]], dtype=np.int_)
                 vertex_instance_ids = self.segmentation_map[vertex_face_correspondence]
+                vertex_seg_indices = self.segmentation_map[vertex_face_correspondence]
             else:
                 vertex_semantic_ids = -np.ones(len(vertices), dtype=np.int_)
                 vertex_instance_ids = -np.ones(len(vertices), dtype=np.int_)
+                vertex_seg_indices = -np.ones(len(vertices), dtype=np.int_)
 
             points = np.vstack((points, vertices))
             colors = np.vstack((colors, vertex_colors))
@@ -1186,40 +1278,63 @@ class gltfScene():
         return_dict["instance_ids"] = instance_ids
         return_dict["vertex_ids"] = vertex_ids
         return_dict["original_points"] = original_points
-        """import open3d as o3d
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(points)
-        pcd.normals = o3d.utility.Vector3dVector(normals)
-        pcd.colors = o3d.utility.Vector3dVector(colors[:, :3])
-        o3d.visualization.draw_geometries([pcd])
-        semantic_color_map = np.random.rand(len(np.arange(np.max(list(semantic_map.values())))) + 1, 3)
-        semantic_colors = semantic_color_map[semantic_ids]
-        # print(f"Points shape {points.shape}\nColors shape {colors.shape}\nNormals shape {normals.shape}\nSemantic ids shape {semantic_ids.shape}\nInstance ids shape {instance_ids.shape}\nSeg ids shape {seg_indices.shape}\nNode indices shape {node_indices.shape}\nMesh indices shape {mesh_indices.shape}\nPrimitive indices shape {primitive_indices.shape}\nLocal tri indices shape {local_tri_indices.shape}\nGlobal tri indices shape {global_tri_indices.shape}\nVertex ids shape {vertex_ids.shape}")
-        # if type(vertices) is np.ndarray:
-        #    print(f"\n\nVertex points shape {vertices.shape}\nVertex colors shape {vertex_colors.shape}\nVertex normals shape {vertex_normals.shape}\nVertex semantic ids shape {vertex_semantic_ids.shape}\nVertex instance ids shape {vertex_instance_ids.shape}\nVertex seg ids shape {vertex_seg_indices.shape}\nVertex node indices shape {vertex_node_indices.shape}\nVertex mesh indices shape {vertex_mesh_indices.shape}\nVertex primitive indices shape {vertex_primitive_indices.shape}\nVertex local tri indices shape {vertex_local_tri_indices.shape}\nVertex global tri indices shape {vertex_global_tri_indices.shape}")
-        pcd.colors = o3d.utility.Vector3dVector(semantic_colors)
-        o3d.visualization.draw_geometries([pcd])
-        isntance_color_map = np.random.rand(len(np.arange(np.max(instance_ids))) + 1, 3)
-        instance_colors = isntance_color_map[instance_ids]
-        pcd.colors = o3d.utility.Vector3dVector(instance_colors)
-        o3d.visualization.draw_geometries([pcd])
-        segments_color_map = np.random.rand(len(np.unique(seg_indices)), 3)
-        segments_colors = segments_color_map[seg_indices]
-        pcd.colors = o3d.utility.Vector3dVector(segments_colors)
-        o3d.visualization.draw_geometries([pcd])
-        node_color_map = np.random.rand(len(np.unique(node_indices)), 3)
-        node_colors = np.zeros(points.shape)
-        for i, node in enumerate(np.unique(node_indices)):
-            node_colors[node_indices == node] = node_color_map[i]
-        pcd.colors = o3d.utility.Vector3dVector(node_colors)
-        o3d.visualization.draw_geometries([pcd])
-        mesh_color_map = np.random.rand(len(np.unique(mesh_indices)), 3)
-        mesh_colors = np.zeros(points.shape)
-        for i, mesh in enumerate(np.unique(mesh_indices)):
-            mesh_colors[mesh_indices == mesh] = mesh_color_map[i]
-        pcd.colors = o3d.utility.Vector3dVector(mesh_colors)
-        o3d.visualization.draw_geometries([pcd])"""
         return return_dict
+
+    def calculate_curvature(self, triangles):
+        unique_vertices, inverse_indices = np.unique(triangles.reshape(-1, 3), axis=0, return_inverse=True)
+        face_indices = inverse_indices.reshape(-1, 3)
+
+        angle_deficits = self.calculate_angle_deficits(unique_vertices, face_indices)
+
+        vertex_curvatures = self.calculate_gaussian_curvature(unique_vertices, face_indices, angle_deficits)
+
+        triangle_curvatures = self.average_triangle_curvatures(face_indices, vertex_curvatures)
+
+        return triangle_curvatures
+
+    def calculate_angle_deficits(self, vertices, faces):
+        angle_deficits = np.zeros(len(vertices))
+        for face in faces:
+            v0, v1, v2 = vertices[face]
+            angles = self.calculate_triangle_angles(v0, v1, v2)
+            angle_deficits[face] += angles
+        return 2 * np.pi - angle_deficits
+
+    def calculate_gaussian_curvature(self, vertices, faces, angle_deficits):
+        vertex_areas = np.zeros(len(vertices))
+        for face in faces:
+            v0, v1, v2 = vertices[face]
+            area = 0.5 * np.linalg.norm(np.cross(v1 - v0, v2 - v0))
+            vertex_areas[face] += area / 3 
+
+        eps = 1e-8
+        gaussian_curvature = angle_deficits / (vertex_areas + eps)
+
+        gaussian_curvature = np.nan_to_num(gaussian_curvature, nan=0.0, posinf=0.0, neginf=0.0)
+
+        return gaussian_curvature
+
+    def average_triangle_curvatures(self, faces, vertex_curvatures):
+        return np.mean(vertex_curvatures[faces], axis=1)
+
+    def calculate_triangle_angles(self, v0, v1, v2):
+        e0 = v1 - v0
+        e1 = v2 - v1
+        e2 = v0 - v2
+
+        e0_len = np.linalg.norm(e0)
+        e1_len = np.linalg.norm(e1)
+        e2_len = np.linalg.norm(e2)
+
+        eps = 1e-8
+        angle0 = self.safe_arccos(np.dot(-e2, e0) / (e2_len * e0_len + eps))
+        angle1 = self.safe_arccos(np.dot(-e0, e1) / (e0_len * e1_len + eps))
+        angle2 = self.safe_arccos(np.dot(-e1, e2) / (e1_len * e2_len + eps))
+
+        return np.array([angle0, angle1, angle2])
+
+    def safe_arccos(self, x):
+        return np.arccos(np.clip(x, -1.0, 1.0))
 
     def export_gltf2(self, export_path):
         """
@@ -1436,7 +1551,7 @@ class gltfScene():
         Args:
             tokeep_mask: np.ndarray, the mask of faces to keep
         """
-        # Update the scene graph structures first
+        print("WARNING: keep_faces is known to have bugs")
         toremove_mask = np.logical_not(tokeep_mask)
         nodes_to_be_updated = np.unique(self.node_map[toremove_mask])
         total_vertex_left_counter = 0
@@ -1537,7 +1652,7 @@ class gltfScene():
                         )
                         indices_accessor_index = len(self.gltf2.accessors)
                         self.gltf2.accessors.append(indices_accessor)
-                        # print(f"Updating indices accessor {indices_accessor_index} with {indices_accessor.count} indices. Max {indices_accessor.max}, Min {indices_accessor.min}. Buffer view {indices_buffer_view_index}, Byte length {indices_byte_length}, Buffer offset {buffer_offset}")
+                        # (f"Updating indices accessor {indices_accessor_index} with {indices_accessor.count} indices. Max {indices_accessor.max}, Min {indices_accessor.min}. Buffer view {indices_buffer_view_index}, Byte length {indices_byte_length}, Buffer offset {buffer_offset}")
                     updated_pygltflib_data[primitive_id] = (attribute_accessors, indices_accessor_index)
                     self.gltf2.set_binary_blob(b"".join(blobs))
                 elif np.all(primitive_keep_faces_mask):
@@ -1577,7 +1692,7 @@ class gltfScene():
                 self.mesh_lookup[mesh.id].primitives = updated_primitives
                 self.gltf2.meshes[mesh.id].primitives = [
                     pygltflib.Primitive(
-                        attributes={key: accessor for key, accessor in attribute_accessors.items()},
+                        attributes=pygltflib.Attributes(**{key: accessor for key, accessor in attribute_accessors.items()}),
                         indices=indices_accessor_index,
                         material=pygltflib_primitive.material
                     ) for attribute_accessors, indices_accessor_index in updated_pygltflib_data.values()
@@ -1592,6 +1707,10 @@ class gltfScene():
             self.segmentation_map = self.segmentation_map[tokeep_mask]
         if self.has_precomputed_segmentation:
             self.precomputed_segmentation_map = self.precomputed_segmentation_map[tokeep_mask]
+        new_vertex_indices = np.arange(total_vertex_left_counter)
+        vertex_index_map = {old: new for new, old in enumerate(np.unique(self.faces.flatten()))}
+        self.faces = np.array([[vertex_index_map[v] for v in face] for face in self.faces])
+        self.vertices = self.vertices[new_vertex_indices]
 
     def __str__(self):
         class_dict = {"len(self.nodes)": len(self.nodes),
@@ -1606,3 +1725,4 @@ class gltfScene():
                       "precomputed_segmentation_parts":
                       [part.__dict__() for part in self.precomputed_segmentation_parts.values()]}
         return f"gltfScene: {json.dumps(class_dict)}"
+
