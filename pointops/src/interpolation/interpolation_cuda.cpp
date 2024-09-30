@@ -1,51 +1,23 @@
-#include <torch/serialize/tensor.h>
 #include <vector>
+#include <torch/serialize/tensor.h>
 #include <ATen/cuda/CUDAContext.h>
-#include <THC/THC.h>
 #include "interpolation_cuda_kernel.h"
 
-extern THCState *state;
 
-void nearestneighbor_cuda(int b, int n, int m, at::Tensor unknown_tensor, at::Tensor known_tensor, at::Tensor dist2_tensor, at::Tensor idx_tensor)
+void interpolation_forward_cuda(int n, int c, int k, at::Tensor input_tensor, at::Tensor idx_tensor, at::Tensor weight_tensor, at::Tensor output_tensor)
 {
-    const float *unknown = unknown_tensor.data<float>();
-    const float *known = known_tensor.data<float>();
-    float *dist2 = dist2_tensor.data<float>();
-    int *idx = idx_tensor.data<int>();
-    nearestneighbor_cuda_launcher(b, n, m, unknown, known, dist2, idx);
+    const float *input = input_tensor.data_ptr<float>();
+    const int *idx = idx_tensor.data_ptr<int>();
+    const float *weight = weight_tensor.data_ptr<float>();
+    float *output = output_tensor.data_ptr<float>();
+    interpolation_forward_cuda_launcher(n, c, k, input, idx, weight, output);
 }
 
-void interpolation_forward_cuda(int b, int c, int m, int n, at::Tensor points_tensor, at::Tensor idx_tensor, at::Tensor weight_tensor, at::Tensor out_tensor)
+void interpolation_backward_cuda(int n, int c, int k, at::Tensor grad_output_tensor, at::Tensor idx_tensor, at::Tensor weight_tensor, at::Tensor grad_input_tensor)
 {
-    const float *points = points_tensor.data<float>();
-    const float *weight = weight_tensor.data<float>();
-    float *out = out_tensor.data<float>();
-    const int *idx = idx_tensor.data<int>();
-    interpolation_forward_cuda_launcher(b, c, m, n, points, idx, weight, out);
-}
-
-void interpolation_backward_cuda(int b, int c, int n, int m, at::Tensor grad_out_tensor, at::Tensor idx_tensor, at::Tensor weight_tensor, at::Tensor grad_points_tensor)
-{
-    const float *grad_out = grad_out_tensor.data<float>();
-    const float *weight = weight_tensor.data<float>();
-    float *grad_points = grad_points_tensor.data<float>();
-    const int *idx = idx_tensor.data<int>();
-    interpolation_backward_cuda_launcher(b, c, n, m, grad_out, idx, weight, grad_points);
-}
-
-void nearestneighbor_cuda_fast(int b, int n, int m, at::Tensor unknown_tensor, at::Tensor known_tensor, at::Tensor dist2_tensor, at::Tensor idx_tensor) {
-    const float *unknown = unknown_tensor.data<float>();
-    const float *known = known_tensor.data<float>();
-    float *dist2 = dist2_tensor.data<float>();
-    int *idx = idx_tensor.data<int>();
-    nearestneighbor_cuda_launcher_fast(b, n, m, unknown, known, dist2, idx);
-}
-
-void interpolation_forward_cuda_fast(int b, int c, int m, int n, at::Tensor points_tensor, at::Tensor idx_tensor, at::Tensor weight_tensor, at::Tensor out_tensor) {
-
-    const float *points = points_tensor.data<float>();
-    const float *weight = weight_tensor.data<float>();
-    float *out = out_tensor.data<float>();
-    const int *idx = idx_tensor.data<int>();
-    interpolation_forward_cuda_launcher_fast(b, c, m, n, points, idx, weight, out);
+    const float *grad_output = grad_output_tensor.data_ptr<float>();
+    const int *idx = idx_tensor.data_ptr<int>();
+    const float *weight = weight_tensor.data_ptr<float>();
+    float *grad_input = grad_input_tensor.data_ptr<float>();
+    interpolation_backward_cuda_launcher(n, c, k, grad_output, idx, weight, grad_input);
 }

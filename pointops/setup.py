@@ -1,33 +1,33 @@
-#python3 setup.py install
+import os
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+from distutils.sysconfig import get_config_vars
+
+(opt,) = get_config_vars("OPT")
+os.environ["OPT"] = " ".join(
+    flag for flag in opt.split() if flag != "-Wstrict-prototypes"
+)
+
+src = "src"
+sources = [
+    os.path.join(root, file)
+    for root, dirs, files in os.walk(src)
+    for file in files
+    if file.endswith(".cpp") or file.endswith(".cu")
+]
 
 setup(
-    name='pointops',
+    name="pointops",
+    version="1.0",
+    install_requires=["torch", "numpy"],
+    packages=["pointops"],
+    package_dir={"pointops": "functions"},
     ext_modules=[
-        CUDAExtension('pointops_cuda', [
-            'src/pointops_api.cpp',
-
-            'src/ballquery/ballquery_cuda.cpp',
-            'src/ballquery/ballquery_cuda_kernel.cu',
-            'src/knnquery/knnquery_cuda.cpp',
-            'src/knnquery/knnquery_cuda_kernel.cu',
-            'src/grouping/grouping_cuda.cpp',
-            'src/grouping/grouping_cuda_kernel.cu',
-            'src/grouping_int/grouping_int_cuda.cpp',
-            'src/grouping_int/grouping_int_cuda_kernel.cu',
-            'src/interpolation/interpolation_cuda.cpp',
-            'src/interpolation/interpolation_cuda_kernel.cu',
-            'src/sampling/sampling_cuda.cpp',
-            'src/sampling/sampling_cuda_kernel.cu',
-
-            'src/labelstat/labelstat_cuda.cpp',
-            'src/labelstat/labelstat_cuda_kernel.cu',
-
-            'src/featuredistribute/featuredistribute_cuda.cpp',
-            'src/featuredistribute/featuredistribute_cuda_kernel.cu'
-        ],
-                      extra_compile_args={'cxx': ['-g'],
-                                          'nvcc': ['-O2']})
+        CUDAExtension(
+            name="pointops._C",
+            sources=sources,
+            extra_compile_args={"cxx": ["-g"], "nvcc": ["-O2"]},
+        )
     ],
-    cmdclass={'build_ext': BuildExtension})
+    cmdclass={"build_ext": BuildExtension},
+)
