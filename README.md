@@ -92,12 +92,6 @@ gltf.transform_coordinate_frame(origin_coordinate_frame, target_coordinate_frame
 gltf.rescale(2)
 ```
 
-Visualize GLTF (currently approximate as extensions are not supported)
-
-```
-gltf.show()
-```
-
 ## Limitations and Development <a name = "dev"></a>
 
 There is a number of limitations that may or may not be lifted in the future:
@@ -107,7 +101,6 @@ There is a number of limitations that may or may not be lifted in the future:
 * Limited number of texture types supported (excluding normalTexture, occlusionTexture, emissiveTexture)
 
 Current TODOs (approximately in order of priority):
-* Point cloud sampling (starting with CPU, CUDA implementation may be added in the future)
 * Mesh geometry modification
 * KDTree and KNN
-* Support transformations (node transformations defined in glTF are already supported)
+* Extensions support
