@@ -849,26 +849,26 @@ class gltfScene():
 
         self.gltf2.set_binary_blob(b"".join(blobs))
 
-        def create_colored_trimesh(self, face_colors: np.ndarray):
-            """
-            Create a colored trimesh from the scene.
-            Args:
-                face_colors: np.ndarray, the colors of the faces
-            """
-            if np.any(face_colors > 1):
-                raise ValueError("Face colors must be in the range [0, 1].")
-            trimesh_faces = []
-            trimesh_vertices = []
+    def create_colored_trimesh(self, face_colors: np.ndarray):
+        """
+        Create a colored trimesh from the scene.
+        Args:
+            face_colors: np.ndarray, the colors of the faces
+        """
+        if np.any(face_colors > 1):
+            raise ValueError("Face colors must be in the range [0, 1].")
+        trimesh_faces = []
+        trimesh_vertices = []
 
-            for i, color in enumerate(face_colors):
-                trimesh_faces.append([i*3, i*3+1, i*3+2])
-                trimesh_vertices.append(self.vertices[self.faces[i]][0])
-                trimesh_vertices.append(self.vertices[self.faces[i]][1])
-                trimesh_vertices.append(self.vertices[self.faces[i]][2])
-            mesh = trimesh.Trimesh(vertices=np.array(trimesh_vertices), faces=np.array(trimesh_faces))
+        for i, color in enumerate(face_colors):
+            trimesh_faces.append([i*3, i*3+1, i*3+2])
+            trimesh_vertices.append(self.vertices[self.faces[i]][0])
+            trimesh_vertices.append(self.vertices[self.faces[i]][1])
+            trimesh_vertices.append(self.vertices[self.faces[i]][2])
+        mesh = trimesh.Trimesh(vertices=np.array(trimesh_vertices), faces=np.array(trimesh_faces))
 
-            mesh.visual = trimesh.visual.color.ColorVisuals(mesh, face_colors=face_colors)
-            return mesh
+        mesh.visual = trimesh.visual.color.ColorVisuals(mesh, face_colors=face_colors)
+        return mesh
 
     def create_trimesh(self):
         """
