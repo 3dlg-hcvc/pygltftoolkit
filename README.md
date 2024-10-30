@@ -23,6 +23,17 @@ PIL
 trimesh
 ```
 
+If you want to use FPD to sample points
+```
+torch
+```
+and run
+```
+# PointOps from PointCept libbrary - https://github.com/Pointcept/Pointcept
+cd pointops
+python setup.py install
+```
+
 Please also install meshcat for visualization
 
 ```
