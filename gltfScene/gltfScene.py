@@ -579,15 +579,28 @@ class gltfScene():
         self.has_segmentation = True
         self.segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
 
+        node_index_map = None  # Stores the mapping between node indices in the source glTF and the indices of the nodes in the glTF exported by STK
+        if "nodeIndex" in self.gltf2.nodes[0].extras:
+            node_index_map = {}
+            for node_id, node in enumerate(self.gltf2.nodes):
+                node_index_map[node.extras["nodeIndex"]] = node_id
+
         stk_id_gltf_id_map = None
         if mapping_path is not None:
             stk_id_gltf_id_map = {}
             with open(mapping_path, "r") as f:
                 mapping = json.load(f)
             for meshMap in mapping["meshMapping"]:
-                stk_id_gltf_id_map[meshMap["index"]] = meshMap["nodePath"][-1]
+                node_index = meshMap["nodePath"][-1]
+
+                if node_index_map is not None:
+                    node_index = node_index_map[node_index]
+
+                stk_id_gltf_id_map[meshMap["index"]] = node_index
         else:
             stk_id_gltf_id_map = np.arange(len(self.nodes))
+            if node_index_map is not None:
+                stk_id_gltf_id_map = [node_index_map[node_index] for node_index in stk_id_gltf_id_map]
 
         with open(stk_segmentation_path, "r") as f:
             stk_segmentation = json.load(f)
@@ -623,6 +636,12 @@ class gltfScene():
         self.has_segmentation = True
         self.segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
 
+        node_index_map = None  # Stores the mapping between node indices in the source glTF and the indices of the nodes in the glTF exported by STK
+        if "nodeIndex" in self.gltf2.nodes[0].extras:
+            node_index_map = {}
+            for node_id, node in enumerate(self.gltf2.nodes):
+                node_index_map[node.extras["nodeIndex"]] = node_id
+
         stk_id_gltf_id_map = None
         stk_tri_gltf_tri_map = None
         if mapping_path:
@@ -631,7 +650,13 @@ class gltfScene():
             with open(mapping_path, "r") as f:
                 mapping = json.load(f)
             for meshMap in mapping["meshMapping"]:
-                stk_id_gltf_id_map[meshMap["index"]] = meshMap["nodePath"][-1]
+                node_index = meshMap["nodePath"][-1]
+
+                if node_index_map is not None:
+                    node_index = node_index_map[node_index]
+
+                stk_id_gltf_id_map[meshMap["index"]] = node_index
+
             stk_ids = np.sort(np.asarray(list(stk_id_gltf_id_map.keys())))
             tri_covered = 0
             for stk_id in stk_ids:
@@ -640,7 +665,15 @@ class gltfScene():
                 tri_covered += len(np.where(self.node_map == gltf_id)[0])
         else:
             stk_id_gltf_id_map = np.arange(len(np.unique(self.node_map)))
-            stk_tri_gltf_tri_map = np.arange(len(self.faces))
+            if node_index_map is not None:
+                stk_id_gltf_id_map = [node_index_map[node_index] for node_index in stk_id_gltf_id_map]
+                stk_ids = np.sort(np.asarray(list(stk_id_gltf_id_map.keys())))
+                for stk_id in stk_ids:
+                    gltf_id = stk_id_gltf_id_map[stk_id]
+                    stk_tri_gltf_tri_map[tri_covered:tri_covered + len(np.where(self.node_map == gltf_id)[0])] = np.where(self.node_map == gltf_id)[0]
+                    tri_covered += len(np.where(self.node_map == gltf_id)[0])
+            else:
+                stk_tri_gltf_tri_map = np.arange(len(self.faces))
 
         with open(stk_segmentation_path, "r") as f:
             stk_segmentation = json.load(f)
@@ -819,6 +852,13 @@ class gltfScene():
             the STK
             mapping_path: string, the path to the mesh index mapping
         """
+
+        node_index_map = None  # Stores the mapping between node indices in the source glTF and the indices of the nodes in the glTF exported by STK
+        if "nodeIndex" in self.gltf2.nodes[0].extras:
+            node_index_map = {}
+            for node_id, node in enumerate(self.gltf2.nodes):
+                node_index_map[node.extras["nodeIndex"]] = node_id
+
         mapping = None
         stk_id_gltf_id_map = None
         if mapping_path:
@@ -826,7 +866,18 @@ class gltfScene():
             with open(mapping_path, "r") as f:
                 mapping = json.load(f)
             for meshMap in mapping["meshMapping"]:
-                stk_id_gltf_id_map[meshMap["index"]] = meshMap["nodePath"][-1]
+                node_index = meshMap["nodePath"][-1]
+
+                if node_index_map is not None:
+                    node_index = node_index_map[node_index]
+
+                stk_id_gltf_id_map[meshMap["index"]] = node_index
+        else:
+            stk_id_gltf_id_map = np.arange(len(np.unique(self.node_map)))
+
+            if node_index_map is not None:
+                stk_id_gltf_id_map = [node_index_map[node_index] for node_index in stk_id_gltf_id_map]
+
         self.has_precomputed_segmentation = True
         self.precomputed_segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
         with open(stk_precomputed_segmentation_path, "r") as f:
@@ -860,6 +911,16 @@ class gltfScene():
             the STK
             mapping_path: string, the path to the mesh index mapping
         """
+
+        node_index_map = None  # Stores the mapping between node indices in the source glTF and the indices of the nodes in the glTF exported by STK
+        if "nodeIndex" in self.gltf2.nodes[0].extras:
+            node_index_map = {}
+            for node_id, node in enumerate(self.gltf2.nodes):
+                print(node)
+                if "nodeIndex" not in node.extras:
+                    continue
+                node_index_map[node.extras["nodeIndex"]] = node_id
+
         mapping = None
         stk_id_gltf_id_map = None
         stk_tri_gltf_tri_map = None
@@ -869,7 +930,13 @@ class gltfScene():
             with open(mapping_path, "r") as f:
                 mapping = json.load(f)
             for meshMap in mapping["meshMapping"]:
-                stk_id_gltf_id_map[meshMap["index"]] = meshMap["nodePath"][-1]
+                node_index = meshMap["nodePath"][-1]
+
+                if node_index_map is not None:
+                    node_index = node_index_map[node_index]
+
+                stk_id_gltf_id_map[meshMap["index"]] = node_index
+
             stk_ids = np.sort(np.asarray(list(stk_id_gltf_id_map.keys())))
             tri_covered = 0
             for stk_id in stk_ids:
@@ -878,7 +945,15 @@ class gltfScene():
                 tri_covered += len(np.where(self.node_map == gltf_id)[0])
         else:
             stk_id_gltf_id_map = np.arange(len(np.unique(self.node_map)))
-            stk_tri_gltf_tri_map = np.arange(len(self.mesh_map))
+            if node_index_map is not None:
+                stk_id_gltf_id_map = [node_index_map[node_index] for node_index in stk_id_gltf_id_map]
+                stk_ids = np.sort(np.asarray(list(stk_id_gltf_id_map.keys())))
+                for stk_id in stk_ids:
+                    gltf_id = stk_id_gltf_id_map[stk_id]
+                    stk_tri_gltf_tri_map[tri_covered:tri_covered + len(np.where(self.node_map == gltf_id)[0])] = np.where(self.node_map == gltf_id)[0]
+                    tri_covered += len(np.where(self.node_map == gltf_id)[0])
+            else:
+                stk_tri_gltf_tri_map = np.arange(len(self.faces))
 
         self.has_precomputed_segmentation = True
         self.precomputed_segmentation_map = -np.ones((len(self.node_map)), dtype=np.int_) # np.empty((len(self.node_map)), dtype=np.int_)
