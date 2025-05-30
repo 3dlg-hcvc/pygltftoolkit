@@ -120,30 +120,60 @@ def _get_num_components(type: str) -> int:
         raise ValueError(f"Unknown type: {type}")
 
 
-# Credit - Ivan Tam
-def _read_buffer(scene: GLTF2, accessor_idx) -> list:
+# Credit - Ivan Tam - Optimized for performance
+def _read_buffer(scene: GLTF2, accessor_idx, cache=None, binary_cache=None) -> np.ndarray:
     """
-    Read the data buffer pointed by the accessor.
+    Read the data buffer pointed by the accessor (optimized version with caching).
     Args:
         scene: GLTF2, the glTF 2.0 scene
         accessor_idx: int, the index of the accessor
+        cache: dict, optional cache for processed accessor data
+        binary_cache: dict, optional cache for binary buffer data
     Returns:
-        results: list, the data pointed by the accessor
+        results: np.ndarray, the data pointed by the accessor
     """
+    if cache is not None and accessor_idx in cache:
+        return cache[accessor_idx]
+
     accessor = scene.accessors[accessor_idx]
     buffer_view = scene.bufferViews[accessor.bufferView]
     buffer = scene.buffers[buffer_view.buffer]
-    data = scene.get_data_from_buffer_uri(buffer.uri)
+
+    buffer_uri = buffer.uri
+    if cache is not None:
+        if buffer_uri not in cache:
+            cache[buffer_uri] = scene.get_data_from_buffer_uri(buffer_uri)
+        data = cache[buffer_uri]
+    else:
+        data = scene.get_data_from_buffer_uri(buffer_uri)
+
     type_char, unit_size = _get_unpack_format(accessor.componentType)
     num_components = _get_num_components(accessor.type)
-    unpack_format = f"<{type_char * num_components}"
-    data_size = unit_size * num_components
-    results = []
-    for i in range(accessor.count):
-        idx = buffer_view.byteOffset + accessor.byteOffset + i * data_size
-        binary_data = data[idx:idx+data_size]
-        result = struct.unpack(unpack_format, binary_data)
-        results.append(result[0] if num_components == 1 else result)
+
+    start_byte = buffer_view.byteOffset + accessor.byteOffset
+    total_bytes = accessor.count * num_components * unit_size
+    end_byte = start_byte + total_bytes
+
+    binary_data = data[start_byte:end_byte]
+
+    dtype_map = {
+        'b': np.int8,
+        'B': np.uint8,
+        'h': np.int16,
+        'H': np.uint16,
+        'I': np.uint32,
+        'f': np.float32
+    }
+
+    dtype = dtype_map[type_char]
+
+    if num_components == 1:
+        results = np.frombuffer(binary_data, dtype=dtype, count=accessor.count).copy()
+    else:
+        results = np.frombuffer(binary_data, dtype=dtype, count=accessor.count * num_components).copy()
+        results = results.reshape(accessor.count, num_components)
+    if cache is not None:
+        cache[accessor_idx] = results
     return results
 
 
@@ -196,20 +226,31 @@ class gltfScene():
         self.gltf2: GLTF2 = gltf2
         self.nodes: list = []
         self.samplers: list = []
-        self.faces: np.ndarray = np.empty((0, 3), dtype=np.int_)
-        self.vertices: np.ndarray = np.empty((0, 3), dtype=np.float32)  # With transformation applied
-        self.no_transform_vertices: np.ndarray = np.empty((0, 3), dtype=np.float32)  # Without transformation applied
-        self.normals: np.ndarray = np.empty((0, 3), dtype=np.float32)
 
-        self.node_map: np.ndarray = np.empty((0), dtype=np.int_)
+        self._faces_list: list = []
+        self._vertices_list: list = []
+        self._no_transform_vertices_list: list = []
+        self._normals_list: list = []
+        self._node_map_list: list = []
+        self._mesh_map_list: list = []
+        self._primitive_map_list: list = []
+
+        self._raw_indices_list: list = []
+        self._vertex_counts_list: list = []
+
+        self.faces: np.ndarray = None
+        self.vertices: np.ndarray = None
+        self.no_transform_vertices: np.ndarray = None
+        self.normals: np.ndarray = None
+        self.node_map: np.ndarray = None
+        self.mesh_map: np.ndarray = None
+        self.primitive_map: np.ndarray = None
+
         self.node_lookup: dict = {}
-
-        self.mesh_map: np.ndarray = np.empty((0), dtype=np.int_)
         self.mesh_lookup: dict = {}
 
-        self.primitive_map: np.ndarray = np.empty((0), dtype=np.int_)
-
-        self._global_vertex_counter: int = 0
+        self._buffer_cache: dict = {}
+        self._binary_data_cache: dict = {}
 
         self.has_segmentation: bool = False
         self.has_articulation: bool = False
@@ -235,43 +276,106 @@ class gltfScene():
             self.node_lookup[node_id] = {"node": new_node, "parent_id": None}
             self.nodes.append(new_node)
 
+        self._finalize_arrays()
+
+    def _finalize_arrays(self):
+        if self._raw_indices_list:
+
+            vertex_offset = 0
+            corrected_faces = []
+
+            for i, (raw_indices, vertex_count) in enumerate(zip(self._raw_indices_list, self._vertex_counts_list)):
+                corrected_indices = raw_indices.astype(np.uint32) + np.uint32(vertex_offset)
+                corrected_faces.append(corrected_indices)
+                vertex_offset += vertex_count
+
+            self.faces = np.vstack(corrected_faces)
+            self.node_map = np.concatenate(self._node_map_list)
+            self.mesh_map = np.concatenate(self._mesh_map_list)
+            self.primitive_map = np.concatenate(self._primitive_map_list)
+        else:
+            self.faces = np.empty((0, 3), dtype=np.uint32)
+            self.node_map = np.empty((0), dtype=np.int_)
+            self.mesh_map = np.empty((0), dtype=np.int_)
+            self.primitive_map = np.empty((0), dtype=np.int_)
+
+        if self._vertices_list:
+            self.vertices = np.vstack(self._vertices_list)
+        else:
+            self.vertices = np.empty((0, 3), dtype=np.float32)
+
+        if self._no_transform_vertices_list:
+            self.no_transform_vertices = np.vstack(self._no_transform_vertices_list)
+        else:
+            self.no_transform_vertices = np.empty((0, 3), dtype=np.float32)
+
+        if self._normals_list:
+            self.normals = np.vstack(self._normals_list)
+        else:
+            self.normals = np.empty((0, 3), dtype=np.float32)
+
+        self.segmentation_map = np.empty((0), dtype=np.int_)
+        self.precomputed_segmentation_map = np.empty((0), dtype=np.int_)
+
     def initialize_node(self, node_id: int,
-                        parent_transform: np.ndarray = np.asarray([[1, 0, 0, 0],
-                                                                   [0, 1, 0, 0],
-                                                                   [0, 0, 1, 0],
-                                                                   [0, 0, 0, 1]], dtype=np.float32)) -> Node:
+                        parent_transform: np.ndarray = None) -> Node:
         """
         Initialize the node object and its children.
         Args:
             node_id: int, the id of the node
             parent_transform: np.ndarray, the transformation matrix of the parent node
         """
+        if parent_transform is None:
+            parent_transform = np.eye(4, dtype=np.float32)
+
         checked_attributes = ["COLOR_0", "NORMAL", "POSITION", "TEXCOORD_0"]
-        parent_transform = parent_transform.astype(dtype=np.float32)
         pygltflib_node = self.gltf2.nodes[node_id]
+
+        current_node_transform = np.eye(4, dtype=np.float32)
+
         if pygltflib_node.matrix is not None:
             if len(pygltflib_node.matrix) == 16:
-                matrix = np.array(pygltflib_node.matrix, dtype=np.float32).reshape(4, 4)
+                current_node_transform = np.array(pygltflib_node.matrix, dtype=np.float32).reshape(4, 4).T
             else:
-                matrix = np.asarray(pygltflib_node.matrix, np.float32)
-            new_parent_transform = (matrix @ parent_transform).astype(dtype=np.float32)
+                raise ValueError("Invalid matrix size")
         else:
-            translation = np.asarray(pygltflib_node.translation
-                                     if pygltflib_node.translation is not None else [0, 0, 0])
-            rotation = np.asarray(pygltflib_node.rotation
-                                  if pygltflib_node.rotation is not None else [0, 0, 0, 1])
-            scale = np.asarray(pygltflib_node.scale
-                               if pygltflib_node.scale is not None else [1, 1, 1])
-            scale_matrix = np.diag([scale[0], scale[1], scale[2], 1])
-            rotation_matrix = quaternion_to_rotation_matrix(rotation)
-            translation_matrix = np.array([
-                [1, 0, 0, translation[0]],
-                [0, 1, 0, translation[1]],
-                [0, 0, 1, translation[2]],
-                [0, 0, 0, 1]
-            ])
-            transform = translation_matrix @ rotation_matrix @ scale_matrix
-            new_parent_transform = (transform @ parent_transform).astype(dtype=np.float32)
+            has_translation = pygltflib_node.translation is not None and not np.allclose(pygltflib_node.translation, [0, 0, 0])
+            has_rotation = pygltflib_node.rotation is not None and not np.allclose(pygltflib_node.rotation, [0, 0, 0, 1])
+            has_scale = pygltflib_node.scale is not None and not np.allclose(pygltflib_node.scale, [1, 1, 1])
+
+            if has_translation or has_rotation or has_scale:
+                translation = np.asarray(pygltflib_node.translation
+                                         if pygltflib_node.translation is not None else [0, 0, 0])
+                rotation_quat = np.asarray(pygltflib_node.rotation
+                                      if pygltflib_node.rotation is not None else [0, 0, 0, 1])  # XYZW
+                scale = np.asarray(pygltflib_node.scale
+                                   if pygltflib_node.scale is not None else [1, 1, 1])
+
+                local_transform = np.eye(4, dtype=np.float32)
+
+                # Apply T, R, S in order: M = T @ R @ S
+                # Translation
+                if has_translation:
+                    translation_matrix = np.eye(4, dtype=np.float32)
+                    translation_matrix[:3, 3] = translation
+                    local_transform = translation_matrix @ local_transform
+
+                # Rotation
+                if has_rotation:
+                    rotation_matrix = quaternion_to_rotation_matrix(rotation_quat)
+                    local_transform = local_transform @ rotation_matrix
+
+                # Scale
+                if has_scale:
+                    scale_matrix = np.eye(4, dtype=np.float32)
+                    scale_matrix[0, 0] = scale[0]
+                    scale_matrix[1, 1] = scale[1]
+                    scale_matrix[2, 2] = scale[2]
+                    local_transform = local_transform @ scale_matrix
+
+                current_node_transform = local_transform
+
+        new_parent_transform = parent_transform @ current_node_transform
 
         children = []
         for child_id in pygltflib_node.children:
@@ -289,35 +393,35 @@ class gltfScene():
                 attributes = {}
                 indices_accessor_idx = pygltflib_primitive.indices
                 if indices_accessor_idx is not None:
-                    indices_data = np.asarray(_read_buffer(self.gltf2, indices_accessor_idx))
-                    indices_data += self._global_vertex_counter
+                    indices_data = _read_buffer(self.gltf2, indices_accessor_idx, self._buffer_cache, self._binary_data_cache)
                     indices = indices_data.reshape(-1, 3)
                 else:
-                    # Triangle soup mode
                     accessor_id = getattr(pygltflib_primitive.attributes, "POSITION")
-                    temp_attr = _read_buffer(self.gltf2, accessor_id)
-                    vertices = np.asarray(temp_attr, dtype=np.float32)
-                    indices = np.arange(self._global_vertex_counter, self._global_vertex_counter + len(vertices)).reshape(-1, 3)
-                self.faces = np.vstack((self.faces, indices))
-                self.node_map = np.concatenate((self.node_map,
-                                                np.array([node_id] * len(indices), dtype=np.int_)))
-                self.mesh_map = np.concatenate((self.mesh_map,
-                                                np.array([pygltflib_node.mesh] * len(indices), dtype=np.int_)))
-                self.primitive_map = np.concatenate((self.primitive_map,
-                                                     np.array([primitive_id] * len(indices), dtype=np.int_)))
+                    temp_attr = _read_buffer(self.gltf2, accessor_id, self._buffer_cache, self._binary_data_cache)
+                    vertices = temp_attr.astype(np.float32)
+                    indices = np.arange(0, len(vertices)).reshape(-1, 3)
+
+                self._raw_indices_list.append(indices)
+                vertex_count = 0
+
+                self._node_map_list.append(np.array([node_id] * len(indices), dtype=np.int_))
+                self._mesh_map_list.append(np.array([pygltflib_node.mesh] * len(indices), dtype=np.int_))
+                self._primitive_map_list.append(np.array([primitive_id] * len(indices), dtype=np.int_))
                 for attribute_name in checked_attributes:
                     if getattr(pygltflib_primitive.attributes, attribute_name) is None:
                         continue
                     accessor_id = getattr(pygltflib_primitive.attributes, attribute_name)
-                    temp_attr = _read_buffer(self.gltf2, accessor_id)
-                    attributes[attribute_name] = np.asarray(temp_attr, dtype=np.float32)
+                    temp_attr = _read_buffer(self.gltf2, accessor_id, self._buffer_cache, self._binary_data_cache)
+                    attributes[attribute_name] = temp_attr.astype(np.float32)
                     if attribute_name == "POSITION":
                         position = attributes[attribute_name]
                         node_vertices = np.vstack((node_vertices, position))
-                        self.no_transform_vertices = np.vstack((self.no_transform_vertices, position))
-                        self._global_vertex_counter += len(position)
+                        self._no_transform_vertices_list.append(position)
+                        vertex_count = len(position)
                     elif attribute_name == "NORMAL":
                         node_normals = np.vstack((node_normals, attributes[attribute_name]))
+
+                self._vertex_counts_list.append(vertex_count)
                 if "COLOR_0" in attributes:
                     colors_data = attributes["COLOR_0"]
                     new_primitive = Primitive(
@@ -333,26 +437,24 @@ class gltfScene():
                         new_primitive = Primitive(
                             attributes=attributes,
                             material=PBRMaterial(baseColorFactor=baseColorFactor,
-                                                metallicFactor=metallicFactor,
-                                                roughnessFactor=roughnessFactor)
+                                                 metallicFactor=metallicFactor,
+                                                 roughnessFactor=roughnessFactor)
                         )
                     else:
                         if material.pbrMetallicRoughness.baseColorTexture is not None:
                             texture = self.gltf2.textures[material.pbrMetallicRoughness.baseColorTexture.index]
                             image = self.gltf2.images[texture.source]
                             bufferView = self.gltf2.bufferViews[image.bufferView]
-                            data = copy.deepcopy(self.gltf2).binary_blob()
 
-                            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                                # Adopted from https://gitlab.com/dodgyville/pygltflib/-/blob/v1.16.2/pygltflib/__init__.py?ref_type=tags#L793
-                                temp_file.write(data[bufferView.byteOffset:bufferView.byteOffset + bufferView.byteLength])
-                                temp_file_path = temp_file.name
+                            if bufferView.buffer not in self._binary_data_cache:
+                                self._binary_data_cache[bufferView.buffer] = self.gltf2.get_data_from_buffer_uri(self.gltf2.buffers[bufferView.buffer].uri)
+                            data = self._binary_data_cache[bufferView.buffer]
 
-                            with Image.open(temp_file_path) as pil_image:
+                            image_bytes = data[bufferView.byteOffset:bufferView.byteOffset + bufferView.byteLength]
+
+                            with Image.open(io.BytesIO(image_bytes)) as pil_image:
                                 width, height = pil_image.size
                                 image_data = pil_image.convert("RGBA")
-
-                            os.remove(temp_file_path)
 
                             texcoords = attributes["TEXCOORD_0"]
                             texture_image = TextureImage(image=image_data, mimeType=image.mimeType, name=image.name)
@@ -368,8 +470,8 @@ class gltfScene():
                             new_primitive = Primitive(
                                 attributes=attributes,
                                 material=PBRMaterial(baseColorFactor=baseColorFactor,
-                                                    metallicFactor=metallicFactor,
-                                                    roughnessFactor=roughnessFactor)
+                                                     metallicFactor=metallicFactor,
+                                                     roughnessFactor=roughnessFactor)
                             )
                         else:
                             new_primitive = Primitive(attributes=attributes)
@@ -404,30 +506,23 @@ class gltfScene():
             else:
                 node_vertices_homogeneous = node_vertices
 
-            transformed_vertices = np.dot(node_vertices_homogeneous, new_parent_transform)
-            transformed_vertices = transformed_vertices[:, :3] / transformed_vertices[:, 3][:, np.newaxis]
+            transformed_vertices_homogeneous = (new_parent_transform @ node_vertices_homogeneous.T).T
+            transformed_vertices = transformed_vertices_homogeneous[:, :3] / transformed_vertices_homogeneous[:, 3][:, np.newaxis]
 
-            self.vertices = np.vstack((self.vertices, transformed_vertices))
+            self._vertices_list.append(transformed_vertices)
 
-            # Transform normals
-            """ pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(transformed_vertices)
-            pcd.normals = o3d.utility.Vector3dVector(node_normals)
-            o3d.visualization.draw_geometries([pcd], point_show_normal=True)"""
-
-            if node_normals.shape[1] == 3:
-                normal_transform = np.linalg.inv(new_parent_transform[:3, :3]).T
-                transformed_normals = np.dot(node_normals, normal_transform)
-                # Renormalize the normals
-                norm = np.linalg.norm(transformed_normals, axis=1, keepdims=True)
-                transformed_normals = np.divide(transformed_normals, norm, where=norm != 0)
-                self.normals = np.vstack((self.normals, transformed_normals))
-            
-            """pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(transformed_vertices)
-            pcd.normals = o3d.utility.Vector3dVector(transformed_normals)
-            o3d.visualization.draw_geometries([pcd], point_show_normal=True)"""
-            
+            if node_normals.shape[1] == 3 and node_normals.shape[0] > 0:
+                sub_matrix = new_parent_transform[:3, :3]
+                if np.linalg.det(sub_matrix) != 0:
+                    normal_transform_matrix = np.linalg.inv(sub_matrix).T
+                    transformed_normals = (normal_transform_matrix @ node_normals.T).T
+                    norm = np.linalg.norm(transformed_normals, axis=1, keepdims=True)
+                    transformed_normals = np.divide(transformed_normals, norm, out=np.zeros_like(transformed_normals), where=norm != 0)
+                    self._normals_list.append(transformed_normals)
+                else:
+                    self._normals_list.append(node_normals) 
+            elif node_normals.shape[0] > 0:
+                self._normals_list.append(node_normals)
         else:
             new_mesh = None
         new_node = Node(
@@ -442,16 +537,59 @@ class gltfScene():
         )
         return new_node
 
-    def load_stk_segmentation(self, stk_segmentation: str):
+    def _get_trs_matrix(self, gltf_node: pygltflib.Node) -> np.ndarray:
+        """
+        Computes the local transformation matrix from a glTF node's TRS properties.
+        The transformation is T * R * S.
+        """
+        local_transform = np.eye(4, dtype=np.float32)
+
+        # Apply Scale
+        if gltf_node.scale is not None:
+            scale_val = np.asarray(gltf_node.scale, dtype=np.float32)
+            # S matrix
+            s_matrix = np.diag([scale_val[0], scale_val[1], scale_val[2], 1.0]).astype(np.float32)
+            local_transform = np.dot(s_matrix, local_transform)
+
+        # Apply Rotation
+        if gltf_node.rotation is not None:
+            rotation_val = np.asarray(gltf_node.rotation, dtype=np.float32)
+            # Assuming quaternion_to_rotation_matrix returns a 4x4 matrix
+            # (as implied by its usage in initialize_node)
+            rotation_matrix_4x4 = quaternion_to_rotation_matrix(rotation_val)
+            local_transform = np.dot(rotation_matrix_4x4, local_transform)
+
+        # Apply Translation
+        if gltf_node.translation is not None:
+            translation_val = np.asarray(gltf_node.translation, dtype=np.float32)
+            # T matrix
+            t_matrix = np.eye(4, dtype=np.float32)
+            t_matrix[:3, 3] = translation_val
+            local_transform = np.dot(t_matrix, local_transform)
+
+        return local_transform
+
+    def load_stk_segmentation(self, stk_segmentation_path: str, mapping_path: str = None):
         """
         Load the segmentation annotations produced by the STK.
         Args:
-            stk_segmentation: string, the path to the segmentation annotations produced by the STK
+            stk_segmentation_path: string, the path to the segmentation annotations produced by the STK
+            mapping_path: string, the path to the mapping between STK and GLTF indices
         """
         self.has_segmentation = True
         self.segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
 
-        with open(stk_segmentation, "r") as f:
+        stk_id_gltf_id_map = None
+        if mapping_path is not None:
+            stk_id_gltf_id_map = {}
+            with open(mapping_path, "r") as f:
+                mapping = json.load(f)
+            for meshMap in mapping["meshMapping"]:
+                stk_id_gltf_id_map[meshMap["index"]] = meshMap["nodePath"][-1]
+        else:
+            stk_id_gltf_id_map = np.arange(len(self.nodes))
+
+        with open(stk_segmentation_path, "r") as f:
             stk_segmentation = json.load(f)
         for part in stk_segmentation["parts"]:
             if part is not None:
@@ -460,7 +598,8 @@ class gltfScene():
                 trisegments = []
                 for seg_data in part["partInfo"]["meshTri"] if "partInfo" in part else part["meshTri"]:
                     seg_mesh_index = int(seg_data["meshIndex"])
-                    current_mesh = np.where(self.mesh_map == seg_mesh_index)[0]
+                    current_node = stk_id_gltf_id_map[seg_mesh_index]
+                    current_mesh = np.where(self.node_map == current_node)[0]
                     for tri_data in seg_data["triIndex"]:
                         if type(tri_data) is int:
                             self.segmentation_map[current_mesh[tri_data]] = pid
@@ -470,6 +609,56 @@ class gltfScene():
                     if "segIndex" in seg_data:
                         segIndex = seg_data["segIndex"]
                     trisegment = TriSegment(meshIndex=seg_mesh_index, triIndex=seg_data["triIndex"], segIndex=segIndex)
+                    trisegments.append(trisegment)
+                new_part = SegmentationPart(pid=pid, name=part["name"] if "name" in part else part["label"], label=label, trisegments=trisegments)
+                self.segmentation_parts[pid] = new_part
+
+    def load_stk_segmentation_flattened(self, stk_segmentation_path: str, mapping_path: str = None):
+        """
+        Load the segmentation annotations produced by the STK.
+        Args:
+            stk_segmentation_path: string, the path to the segmentation annotations produced by the STK
+            mapping_path: string, the path to the mapping between STK and GLTF indices
+        """
+        self.has_segmentation = True
+        self.segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
+
+        stk_id_gltf_id_map = None
+        stk_tri_gltf_tri_map = None
+        if mapping_path:
+            stk_id_gltf_id_map = {}
+            stk_tri_gltf_tri_map = np.zeros_like(self.mesh_map)
+            with open(mapping_path, "r") as f:
+                mapping = json.load(f)
+            for meshMap in mapping["meshMapping"]:
+                stk_id_gltf_id_map[meshMap["index"]] = meshMap["nodePath"][-1]
+            stk_ids = np.sort(np.asarray(list(stk_id_gltf_id_map.keys())))
+            tri_covered = 0
+            for stk_id in stk_ids:
+                gltf_id = stk_id_gltf_id_map[stk_id]
+                stk_tri_gltf_tri_map[tri_covered:tri_covered + len(np.where(self.node_map == gltf_id)[0])] = np.where(self.node_map == gltf_id)[0]
+                tri_covered += len(np.where(self.node_map == gltf_id)[0])
+        else:
+            stk_id_gltf_id_map = np.arange(len(np.unique(self.node_map)))
+            stk_tri_gltf_tri_map = np.arange(len(self.faces))
+
+        with open(stk_segmentation_path, "r") as f:
+            stk_segmentation = json.load(f)
+        for part in stk_segmentation["parts"]:
+            if part is not None:
+                pid = int(part["pid"]) if "pid" in part else int(part["partId"])
+                label = part["label"]
+                trisegments = []
+                for seg_data in part["partInfo"]["meshTri"] if "partInfo" in part else part["meshTri"]:
+                    for tri_data in seg_data["triIndex"]:
+                        if type(tri_data) is int:
+                            self.segmentation_map[stk_tri_gltf_tri_map[tri_data]] = pid
+                        elif type(tri_data) is list:
+                            self.segmentation_map[stk_tri_gltf_tri_map[tri_data[0]:tri_data[1]]] = pid
+                    segIndex = None
+                    if "segIndex" in seg_data:
+                        segIndex = seg_data["segIndex"]
+                    trisegment = TriSegment(meshIndex=-1, triIndex=seg_data["triIndex"], segIndex=segIndex)
                     trisegments.append(trisegment)
                 new_part = SegmentationPart(pid=pid, name=part["name"] if "name" in part else part["label"], label=label, trisegments=trisegments)
                 self.segmentation_parts[pid] = new_part
@@ -542,7 +731,7 @@ class gltfScene():
                     segIndex = None
                     if "segIndex" in seg_data:
                         segIndex = seg_data["segIndex"]
-                    trisegment = TriSegment(meshIndex=seg_mesh_index, triIndex=seg_data["triIndex"], segIndex=segIndex)
+                    trisegment = TriSegment(meshIndex=seg_mesh_index, triIndex=seg_data["triIndex"], segIndex=segIndex, triRange=seg_data["triIndex"], nodeIndex=-1)
                     trisegments.append(trisegment)
                 if part_label in ["drawer", "door", "lid"]:
                     new_part = SegmentationPart(pid=pid, name=part["name"] if "name" in part else part["label"], label=part_label, trisegments=trisegments)
@@ -588,18 +777,18 @@ class gltfScene():
             merged_pids_to_remove_mask = np.logical_or(merged_pids_to_remove_mask, self.segmentation_map == pid)
         # self.keep_faces(~merged_pids_to_remove_mask)
 
-    def load_stk_articulation(self, stk_articulation: str):
+    def load_stk_articulation(self, stk_articulation_path: str):
         """
         Load the articulation annotations produced by the STK.
         Args:
-            stk_articulation: string, the path to the articulation annotations produced by the STK
+            stk_articulation_path: string, the path to the articulation annotations produced by the STK
         """
         if not self.has_segmentation:
             raise ValueError("Segmentation annotations must be loaded before loading articulation annotations.")
 
         self.has_articulation = True
 
-        with open(stk_articulation, "r") as f:
+        with open(stk_articulation_path, "r") as f:
             try:
                 stk_articulation = json.load(f)
             except json.JSONDecodeError:
@@ -622,11 +811,11 @@ class gltfScene():
                                        axis=axis)
             self.articulation_parts[pid] = new_part
 
-    def load_stk_precomputed_segmentation(self, stk_precomputed_segmentation: str, mapping_path: str = None):
+    def load_stk_precomputed_segmentation(self, stk_precomputed_segmentation_path: str, mapping_path: str = None):
         """
         Load the precomputed segmentation annotations produced by the STK.
         Args:
-            stk_precomputed_segmentation: string, the path to the precomputed segmentation annotations produced by
+            stk_precomputed_segmentation_path: string, the path to the precomputed segmentation annotations produced by
             the STK
             mapping_path: string, the path to the mesh index mapping
         """
@@ -637,27 +826,28 @@ class gltfScene():
             with open(mapping_path, "r") as f:
                 mapping = json.load(f)
             for meshMap in mapping["meshMapping"]:
-                stk_id_gltf_id_map[meshMap["index"]] = meshMap["meshIndex"]
+                stk_id_gltf_id_map[meshMap["index"]] = meshMap["nodePath"][-1]
         self.has_precomputed_segmentation = True
         self.precomputed_segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
-        with open(stk_precomputed_segmentation, "r") as f:
+        with open(stk_precomputed_segmentation_path, "r") as f:
             stk_precomputed_segmentation = json.load(f)
         trisegments = []
         for segment in stk_precomputed_segmentation["segmentation"]:
             if stk_id_gltf_id_map:
-                mesh_id = stk_id_gltf_id_map[segment["meshIndex"]]
+                node_id = stk_id_gltf_id_map[segment["meshIndex"]]
+                current_range = np.where(self.node_map == node_id)[0]
             else:
                 mesh_id = segment["meshIndex"]
+                current_range = np.where(self.mesh_map == mesh_id)[0]
             seg_id = segment["segIndex"]
-            current_mesh = np.where(self.mesh_map == mesh_id)[0]
             # print(f"Mesh ID: {mesh_id}, Seg ID: {seg_id}")
             for tri_data in segment["triIndex"]:
                 if type(tri_data) is int:
-                    self.precomputed_segmentation_map[current_mesh[tri_data]] = seg_id
+                    self.precomputed_segmentation_map[current_range[tri_data]] = seg_id
                 elif type(tri_data) is list:
-                    self.precomputed_segmentation_map[current_mesh[tri_data[0]:tri_data[1]]] = seg_id
+                    self.precomputed_segmentation_map[current_range[tri_data[0]:tri_data[1]]] = seg_id
 
-            trisegment = TriSegment(meshIndex=mesh_id, triIndex=tri_data, segIndex=seg_id)
+            trisegment = TriSegment(meshIndex=mesh_id, triIndex=tri_data, segIndex=seg_id, nodeIndex=node_id, triRange=tri_data)
             trisegments.append(trisegment)
             new_part = PrecomputedPart(seg_id, trisegments)
             self.precomputed_segmentation_parts[seg_id] = new_part
@@ -679,18 +869,19 @@ class gltfScene():
             with open(mapping_path, "r") as f:
                 mapping = json.load(f)
             for meshMap in mapping["meshMapping"]:
-                stk_id_gltf_id_map[meshMap["index"]] = meshMap["meshIndex"]
-            stk_ids = np.sort(np.asarray(stk_id_gltf_id_map.keys()))
+                stk_id_gltf_id_map[meshMap["index"]] = meshMap["nodePath"][-1]
+            stk_ids = np.sort(np.asarray(list(stk_id_gltf_id_map.keys())))
             tri_covered = 0
             for stk_id in stk_ids:
                 gltf_id = stk_id_gltf_id_map[stk_id]
-                stk_tri_gltf_tri_map[tri_covered:tri_covered + len(np.where(self.mesh_map == gltf_id)[0])] = np.where(self.mesh_map == gltf_id)[0]
-                tri_covered += len(np.where(self.mesh_map == gltf_id)[0])
+                stk_tri_gltf_tri_map[tri_covered:tri_covered + len(np.where(self.node_map == gltf_id)[0])] = np.where(self.node_map == gltf_id)[0]
+                tri_covered += len(np.where(self.node_map == gltf_id)[0])
         else:
+            stk_id_gltf_id_map = np.arange(len(np.unique(self.node_map)))
             stk_tri_gltf_tri_map = np.arange(len(self.mesh_map))
 
         self.has_precomputed_segmentation = True
-        self.precomputed_segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
+        self.precomputed_segmentation_map = -np.ones((len(self.node_map)), dtype=np.int_) # np.empty((len(self.node_map)), dtype=np.int_)
         with open(stk_precomputed_segmentation, "r") as f:
             stk_precomputed_segmentation = json.load(f)
         trisegments = []
@@ -703,7 +894,7 @@ class gltfScene():
                 elif type(tri_data) is list:
                     self.precomputed_segmentation_map[stk_tri_gltf_tri_map[tri_data[0]:tri_data[1]]] = seg_id
 
-            trisegment = TriSegment(meshIndex=-1, triIndex=tri_data, segIndex=seg_id)
+            trisegment = TriSegment(meshIndex=-1, triIndex=tri_data, segIndex=seg_id, nodeIndex=-1, triRange=tri_data)
             trisegments.append(trisegment)
             new_part = PrecomputedPart(seg_id, trisegments)
             self.precomputed_segmentation_parts[seg_id] = new_part
@@ -726,13 +917,67 @@ class gltfScene():
         self.normals = np.dot(self.normals, original_coordinate_frame.T)
         self.normals = np.dot(self.normals, target_coordinate_frame)
 
+    def apply_transform(self, transform_matrix: np.ndarray):
+        """
+        Apply a 4x4 transformation matrix to the entire scene.
+        Args:
+            transform_matrix: np.ndarray, 4x4 transformation matrix
+        """
+        if transform_matrix.shape != (4, 4):
+            raise ValueError("Transform matrix must be 4x4")
+
+        if hasattr(self, 'gltf2') and self.gltf2 is not None:
+            root_node_indices = self.gltf2.scenes[0].nodes if self.gltf2.scenes else []
+
+            for root_node_idx in root_node_indices:
+                gltf_node = self.gltf2.nodes[root_node_idx]
+
+                current_gltf_local_matrix: np.ndarray
+                if gltf_node.matrix is not None:
+                    raw_matrix = np.asarray(gltf_node.matrix, dtype=np.float32)
+                    if raw_matrix.size == 16:
+                        current_gltf_local_matrix = raw_matrix.reshape(4, 4).T
+                    else:
+                        raise ValueError("Malformed transform matrix in gltf_node")
+                else:
+                    current_gltf_local_matrix = self._get_trs_matrix(gltf_node)
+
+                new_gltf_matrix = np.dot(transform_matrix, current_gltf_local_matrix)
+                gltf_node.matrix = new_gltf_matrix.T.flatten().tolist()
+
+                gltf_node.translation = None
+                gltf_node.rotation = None
+                gltf_node.scale = None
+
+        if len(self.vertices) > 0:
+            vertices_homogeneous = np.hstack([self.vertices, np.ones((len(self.vertices), 1), dtype=np.float32)])
+            transformed_vertices = (transform_matrix @ vertices_homogeneous.T).T
+            self.vertices = transformed_vertices[:, :3] / transformed_vertices[:, 3][:, np.newaxis]
+
+        if len(self.normals) > 0:
+            sub_matrix = transform_matrix[:3, :3]
+            if np.linalg.det(sub_matrix) == 0:
+                pass
+            else:
+                normal_transform = np.linalg.inv(sub_matrix).T
+                self.normals = (normal_transform @ self.normals.T).T
+                norm = np.linalg.norm(self.normals, axis=1, keepdims=True)
+                self.normals = np.divide(self.normals, norm, out=np.zeros_like(self.normals), where=norm!=0)
+
     def rescale(self, scale: float):
         """
-        Rescale the scene.
+        Rescale the scene by applying a scale transformation matrix.
         Args:
             scale: float, the scale factor
         """
-        self.vertices *= scale
+        scale_matrix = np.array([
+            [scale, 0, 0, 0],
+            [0, scale, 0, 0],
+            [0, 0, scale, 0],
+            [0, 0, 0, 1]
+        ], dtype=np.float32)
+
+        self.apply_transform(scale_matrix)
 
     def color_faces(self, face_colors: np.ndarray, cut_primitives: bool = False):
         """
@@ -1386,11 +1631,11 @@ class gltfScene():
                     node_matrix = np.asarray(self.gltf2.nodes[node].matrix)
                     if node_matrix.shape != (4, 4):
                         if len(node_matrix) == 16:
-                            node_matrix = node_matrix.reshape((4, 4))
+                            node_matrix = node_matrix.reshape((4, 4))  # Remove transpose to avoid double transposition
                 self.gltf2.nodes[node].matrix = (node_matrix @ (np.asarray([[1, 0, 0, 0],
                                                                             [0, 1, 0, 0],
                                                                             [0, 0, 1, 0],
-                                                                            [translation * axis[0], translation * axis[1], translation * axis[2], 1]]))).flatten().tolist()
+                                                                            [translation * axis[0], translation * axis[1], translation * axis[2], 1]]))).T.flatten().tolist()
         else:
             self.original_vertices[part_vertex_ids] = part_vertices
             # Now also modify self.gltf2 (pygltflib.GLTF2) with updated vertices
@@ -1506,7 +1751,7 @@ class gltfScene():
                 translation_back = np.eye(4)
                 translation_back[:3, 3] = origin
                 transformation_matrix = translation_back @ rotation_matrix_4x4 @ translation_to_origin
-                self.gltf2.nodes[node].matrix = (node_matrix @ transformation_matrix.T).flatten().tolist()
+                self.gltf2.nodes[node].matrix = (node_matrix @ transformation_matrix).T.flatten().tolist()
         else:
             self.original_vertices[part_vertex_ids] = part_vertices
             # Now also modify self.gltf2 (pygltflib.GLTF2) with updated vertices
@@ -1728,4 +1973,3 @@ class gltfScene():
                       "precomputed_segmentation_parts":
                       [part.__dict__() for part in self.precomputed_segmentation_parts.values()]}
         return f"gltfScene: {json.dumps(class_dict)}"
-
