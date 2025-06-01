@@ -903,7 +903,7 @@ class gltfScene():
             new_part = PrecomputedPart(seg_id, trisegments)
             self.precomputed_segmentation_parts[seg_id] = new_part
 
-    def load_stk_precomputed_segmentation_flattened(self, stk_precomputed_segmentation: str, mapping_path: str = None):
+    def load_stk_precomputed_segmentation_flattened(self, stk_precomputed_segmentation: str, mapping_path: str = None, return_mappings: bool = False):
         """
         Load the precomputed segmentation annotations produced by the STK without respecting the mesh boundaries.
         Args:
@@ -956,7 +956,7 @@ class gltfScene():
                 stk_tri_gltf_tri_map = np.arange(len(self.faces))
 
         self.has_precomputed_segmentation = True
-        self.precomputed_segmentation_map = -np.ones((len(self.node_map)), dtype=np.int_) # np.empty((len(self.node_map)), dtype=np.int_)
+        self.precomputed_segmentation_map = -np.ones((len(self.node_map)), dtype=np.int_)  # np.empty((len(self.node_map)), dtype=np.int_)
         with open(stk_precomputed_segmentation, "r") as f:
             stk_precomputed_segmentation = json.load(f)
         trisegments = []
@@ -973,6 +973,9 @@ class gltfScene():
             trisegments.append(trisegment)
             new_part = PrecomputedPart(seg_id, trisegments)
             self.precomputed_segmentation_parts[seg_id] = new_part
+
+        if return_mappings:
+            return stk_id_gltf_id_map
 
     def transform_coordinate_frame(self, original_coordinate_frame: np.ndarray, target_coordinate_frame: np.ndarray):
         """
