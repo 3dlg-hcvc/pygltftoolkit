@@ -592,11 +592,12 @@ class gltfScene():
                 mapping = json.load(f)
             for meshMap in mapping["meshMapping"]:
                 node_index = meshMap["nodePath"][-1]
+                primitive_index = meshMap["primitiveIndex"]
 
                 if node_index_map is not None:
                     node_index = node_index_map[node_index]
 
-                stk_id_gltf_id_map[meshMap["index"]] = node_index
+                stk_id_gltf_id_map[meshMap["index"]] = (node_index, primitive_index)
         else:
             stk_id_gltf_id_map = np.arange(len(self.nodes))
             if node_index_map is not None:
@@ -611,8 +612,8 @@ class gltfScene():
                 trisegments = []
                 for seg_data in part["partInfo"]["meshTri"] if "partInfo" in part else part["meshTri"]:
                     seg_mesh_index = int(seg_data["meshIndex"])
-                    current_node = stk_id_gltf_id_map[seg_mesh_index]
-                    current_mesh = np.where(self.node_map == current_node)[0]
+                    current_node, current_primitive = stk_id_gltf_id_map[seg_mesh_index]
+                    current_mesh = np.where(np.logical_and(self.node_map == current_node, self.primitive_map == current_primitive))[0]
                     for tri_data in seg_data["triIndex"]:
                         if type(tri_data) is int:
                             self.segmentation_map[current_mesh[tri_data]] = pid
@@ -651,18 +652,20 @@ class gltfScene():
                 mapping = json.load(f)
             for meshMap in mapping["meshMapping"]:
                 node_index = meshMap["nodePath"][-1]
+                primitive_index = meshMap["primitiveIndex"]
 
                 if node_index_map is not None:
                     node_index = node_index_map[node_index]
 
-                stk_id_gltf_id_map[meshMap["index"]] = node_index
+                stk_id_gltf_id_map[meshMap["index"]] = (node_index, primitive_index)
 
             stk_ids = np.sort(np.asarray(list(stk_id_gltf_id_map.keys())))
             tri_covered = 0
             for stk_id in stk_ids:
                 gltf_id = stk_id_gltf_id_map[stk_id]
-                stk_tri_gltf_tri_map[tri_covered:tri_covered + len(np.where(self.node_map == gltf_id)[0])] = np.where(self.node_map == gltf_id)[0]
-                tri_covered += len(np.where(self.node_map == gltf_id)[0])
+                rng = np.where(np.logical_and(self.node_map == gltf_id[0], self.primitive_map == gltf_id[1]))[0]
+                stk_tri_gltf_tri_map[tri_covered:tri_covered + len(rng)] = rng
+                tri_covered += len(rng)
         else:
             stk_id_gltf_id_map = np.arange(len(np.unique(self.node_map)))
             if node_index_map is not None:
@@ -867,11 +870,12 @@ class gltfScene():
                 mapping = json.load(f)
             for meshMap in mapping["meshMapping"]:
                 node_index = meshMap["nodePath"][-1]
+                primitive_index = meshMap["primitiveIndex"]
 
                 if node_index_map is not None:
                     node_index = node_index_map[node_index]
 
-                stk_id_gltf_id_map[meshMap["index"]] = node_index
+                stk_id_gltf_id_map[meshMap["index"]] = (node_index, primitive_index)
         else:
             stk_id_gltf_id_map = np.arange(len(np.unique(self.node_map)))
 
@@ -885,8 +889,8 @@ class gltfScene():
         trisegments = []
         for segment in stk_precomputed_segmentation["segmentation"]:
             if stk_id_gltf_id_map:
-                node_id = stk_id_gltf_id_map[segment["meshIndex"]]
-                current_range = np.where(self.node_map == node_id)[0]
+                node_id, primitive_id = stk_id_gltf_id_map[segment["meshIndex"]]
+                current_range = np.where(np.logical_and(self.node_map == node_id, self.primitive_map == primitive_id))[0]
             else:
                 mesh_id = segment["meshIndex"]
                 current_range = np.where(self.mesh_map == mesh_id)[0]
@@ -931,18 +935,21 @@ class gltfScene():
                 mapping = json.load(f)
             for meshMap in mapping["meshMapping"]:
                 node_index = meshMap["nodePath"][-1]
+                primitive_index = meshMap["primitiveIndex"]
 
                 if node_index_map is not None:
                     node_index = node_index_map[node_index]
 
-                stk_id_gltf_id_map[meshMap["index"]] = node_index
+                stk_id_gltf_id_map[meshMap["index"]] = (node_index, primitive_index)
 
             stk_ids = np.sort(np.asarray(list(stk_id_gltf_id_map.keys())))
             tri_covered = 0
+
             for stk_id in stk_ids:
-                gltf_id = stk_id_gltf_id_map[stk_id]
-                stk_tri_gltf_tri_map[tri_covered:tri_covered + len(np.where(self.node_map == gltf_id)[0])] = np.where(self.node_map == gltf_id)[0]
-                tri_covered += len(np.where(self.node_map == gltf_id)[0])
+                gltf_node_id, gltf_primitive_id = stk_id_gltf_id_map[stk_id]
+                rng = np.where(np.logical_and(self.node_map == gltf_node_id, self.primitive_map == gltf_primitive_id))[0]
+                stk_tri_gltf_tri_map[tri_covered:tri_covered + len(rng)] = rng
+                tri_covered += len(rng)
         else:
             stk_id_gltf_id_map = np.arange(len(np.unique(self.node_map)))
             if node_index_map is not None:
