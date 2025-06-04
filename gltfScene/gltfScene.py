@@ -920,7 +920,6 @@ class gltfScene():
         if "nodeIndex" in self.gltf2.nodes[0].extras:
             node_index_map = {}
             for node_id, node in enumerate(self.gltf2.nodes):
-                print(node)
                 if "nodeIndex" not in node.extras:
                     continue
                 node_index_map[node.extras["nodeIndex"]] = node_id
