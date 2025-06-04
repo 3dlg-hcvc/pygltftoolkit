@@ -580,9 +580,11 @@ class gltfScene():
         self.segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
 
         node_index_map = None  # Stores the mapping between node indices in the source glTF and the indices of the nodes in the glTF exported by STK
-        if "nodeIndex" in self.gltf2.nodes[0].extras:
-            node_index_map = {}
-            for node_id, node in enumerate(self.gltf2.nodes):
+
+        for node_id, node in enumerate(self.gltf2.nodes):
+            if "nodeIndex" in node.extras:
+                if node_index_map is None:
+                    node_index_map = {}
                 node_index_map[node.extras["nodeIndex"]] = node_id
 
         stk_id_gltf_id_map = None
