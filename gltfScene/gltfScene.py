@@ -893,8 +893,11 @@ class gltfScene():
             if stk_id_gltf_id_map:
                 node_id, primitive_id = stk_id_gltf_id_map[segment["meshIndex"]]
                 current_range = np.where(np.logical_and(self.node_map == node_id, self.primitive_map == primitive_id))[0]
+                mesh_id = int(self.mesh_map[current_range][0])
             else:
                 mesh_id = segment["meshIndex"]
+                node_id = self.node_map[self.mesh_map == mesh_id][0]
+                primitive_id = self.primitive_map[np.logical_and(self.mesh_map == mesh_id, self.node_map == node_id)][0]
                 current_range = np.where(self.mesh_map == mesh_id)[0]
             seg_id = segment["segIndex"]
             # print(f"Mesh ID: {mesh_id}, Seg ID: {seg_id}")
