@@ -849,7 +849,7 @@ class gltfScene():
                                        axis=axis)
             self.articulation_parts[pid] = new_part
 
-    def load_stk_precomputed_segmentation(self, stk_precomputed_segmentation_path: str, mapping_path: str = None):
+    def load_stk_precomputed_segmentation(self, stk_precomputed_segmentation_path: str, mapping_path: str = None, return_mappings: bool = False):
         """
         Load the precomputed segmentation annotations produced by the STK.
         Args:
@@ -862,6 +862,8 @@ class gltfScene():
         if "nodeIndex" in self.gltf2.nodes[0].extras:
             node_index_map = {}
             for node_id, node in enumerate(self.gltf2.nodes):
+                if "nodeIndex" not in node.extras:
+                    continue
                 node_index_map[node.extras["nodeIndex"]] = node_id
 
         mapping = None
@@ -911,6 +913,9 @@ class gltfScene():
             trisegments.append(trisegment)
             new_part = PrecomputedPart(seg_id, trisegments)
             self.precomputed_segmentation_parts[seg_id] = new_part
+
+        if return_mappings:
+            return stk_id_gltf_id_map
 
     def load_stk_precomputed_segmentation_flattened(self, stk_precomputed_segmentation: str, mapping_path: str = None, return_mappings: bool = False):
         """
