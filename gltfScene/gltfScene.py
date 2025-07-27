@@ -196,11 +196,12 @@ def quaternion_to_rotation_matrix(q):
 
 
 class gltfScene():
-    def __init__(self, gltf2: GLTF2):
+    def __init__(self, gltf2: GLTF2, annotated=False):
         """
         Initialize the glTF scene object
         Args:
             gltf2: GLTF2, the glTF 2.0 scene
+            annotated: bool, whether the object has STK annotations embedded
         Properties:
             nodes: list, the nodes in the glTF 2.0 scene
             faces: numpy.ndarray(np.int_), the faces of the mesh
@@ -277,6 +278,9 @@ class gltfScene():
             self.nodes.append(new_node)
 
         self._finalize_arrays()
+
+        if annotated:
+            self.extract_annotations()
 
     def _finalize_arrays(self):
         if self._raw_indices_list:
@@ -568,6 +572,49 @@ class gltfScene():
             local_transform = np.dot(t_matrix, local_transform)
 
         return local_transform
+
+    def extract_annotations(self):
+        """
+        Extract the annotations from the glTF scene.
+        """
+        try:
+            self.has_segmentation = True
+            self.segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
+            self.segmentation_parts = {}
+
+            root_index = self.gltf2.scenes[0].nodes[0]
+            root_node = self.node_lookup[root_index]["node"]
+
+            for child_node in root_node.children:
+                gltf2_node = self.gltf2.nodes[child_node.id]
+
+                if "id" not in gltf2_node.extras:
+                    raise Exception(f"Node {gltf2_node.name} has no id. First level children in annotated glTFs must have an id.")
+
+                id = int(gltf2_node.extras["id"])
+
+                if "label" not in gltf2_node.extras:
+                    raise Exception(f"Node {gltf2_node.name} has no label. First level children in annotated glTFs must have a label.")
+
+                label = gltf2_node.extras["label"]
+
+                def _get_children(node):
+                    if node.children is None:
+                        return []
+                    return [self.node_lookup[child.id]["node"] for child in node.children]
+
+                children = _get_children(child_node)
+
+                # Assign the segmentation map
+                self.segmentation_map[self.node_map == child_node.id] = id
+                for child in children:
+                    self.segmentation_map[self.node_map == child.id] = id
+
+                new_part = SegmentationPart(pid=id, name=label, label=label, trisegments=None)
+                self.segmentation_parts[id] = new_part
+            # TODO: Add articulation annotations
+        except Exception as e:
+            raise Exception(f"Error extracting annotations from the glTF scene: {e}")
 
     def load_stk_segmentation(self, stk_segmentation_path: str, mapping_path: str = None):
         """
