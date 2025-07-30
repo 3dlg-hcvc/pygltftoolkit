@@ -585,6 +585,8 @@ class gltfScene():
             root_index = self.gltf2.scenes[0].nodes[0]
             root_node = self.node_lookup[root_index]["node"]
 
+            processed_nodes = []
+
             for child_node in root_node.children:
                 gltf2_node = self.gltf2.nodes[child_node.id]
 
@@ -599,19 +601,28 @@ class gltfScene():
                 label = gltf2_node.extras["label"]
 
                 def _get_children(node):
-                    if node.children is None:
+                    if not node.children:
                         return []
-                    return [self.node_lookup[child.id]["node"] for child in node.children]
+                    descendants = []
+                    for child in node.children:
+                        descendants.append(child)
+                        descendants.extend(_get_children(child))
+                    return descendants
 
                 children = _get_children(child_node)
+                children_ids = [child.id for child in children]
 
                 # Assign the segmentation map
                 self.segmentation_map[self.node_map == child_node.id] = id
                 for child in children:
                     self.segmentation_map[self.node_map == child.id] = id
+                    processed_nodes.append(child.id)
+                processed_nodes.append(child_node.id)
 
                 new_part = SegmentationPart(pid=id, name=label, label=label, trisegments=None)
                 self.segmentation_parts[id] = new_part
+            if len(np.unique(self.segmentation_map)) != len(self.segmentation_parts):
+                raise Exception(f"Number of unique segmentation map values ({len(np.unique(self.segmentation_map))}) does not match number of segmentation parts ({len(self.segmentation_parts)}).")
             # TODO: Add articulation annotations
         except Exception as e:
             raise Exception(f"Error extracting annotations from the glTF scene: {e}")
