@@ -2113,6 +2113,359 @@ class gltfScene():
         self.faces = np.array([[vertex_index_map[v] for v in face] for face in self.faces])
         self.vertices = self.vertices[new_vertex_indices]
 
+    def get_node_gltf2(self, node_id: int):
+        """
+        Returns pygltflib.GLTF2 object containing the requested node and its children.
+        Including materials, etc.
+        Args:
+            node_id: int, the node id
+        Returns:
+            pygltflib.GLTF2, the gltf2 object
+        """
+        node_mapping = {}
+        mesh_mapping = {}
+        material_mapping = {}
+        texture_mapping = {}
+        sampler_mapping = {}
+        image_mapping = {}
+        accessor_mapping = {}
+        bufferview_mapping = {}
+        buffer_mapping = {}
+
+        new_nodes = []
+        new_meshes = []
+        new_materials = []
+        new_textures = []
+        new_samplers = []
+        new_images = []
+        new_accessors = []
+        new_bufferviews = []
+        new_buffers = []
+
+        buffer_data = []
+
+        def get_or_create_buffer(buffer_idx):
+            if buffer_idx in buffer_mapping:
+                return buffer_mapping[buffer_idx]
+
+            original_buffer = self.gltf2.buffers[buffer_idx]
+            buffer_uri = original_buffer.uri
+            data = self.gltf2.get_data_from_buffer_uri(buffer_uri)
+
+            new_buffer = pygltflib.Buffer(byteLength=len(data))
+            new_buffer_idx = len(new_buffers)
+            new_buffers.append(new_buffer)
+            buffer_data.append(data)
+            buffer_mapping[buffer_idx] = new_buffer_idx
+
+            return new_buffer_idx
+
+        def get_or_create_bufferview(bufferview_idx):
+            if bufferview_idx in bufferview_mapping:
+                return bufferview_mapping[bufferview_idx]
+
+            original_bufferview = self.gltf2.bufferViews[bufferview_idx]
+            new_buffer_idx = get_or_create_buffer(original_bufferview.buffer)
+
+            new_bufferview = pygltflib.BufferView(
+                buffer=new_buffer_idx,
+                byteOffset=original_bufferview.byteOffset,
+                byteLength=original_bufferview.byteLength,
+                byteStride=original_bufferview.byteStride,
+                target=original_bufferview.target
+            )
+            new_bufferview_idx = len(new_bufferviews)
+            new_bufferviews.append(new_bufferview)
+            bufferview_mapping[bufferview_idx] = new_bufferview_idx
+
+            return new_bufferview_idx
+
+        def get_or_create_accessor(accessor_idx):
+            if accessor_idx in accessor_mapping:
+                return accessor_mapping[accessor_idx]
+
+            original_accessor = self.gltf2.accessors[accessor_idx]
+            new_bufferview_idx = None
+            if original_accessor.bufferView is not None:
+                new_bufferview_idx = get_or_create_bufferview(original_accessor.bufferView)
+
+            new_accessor = pygltflib.Accessor(
+                bufferView=new_bufferview_idx,
+                byteOffset=original_accessor.byteOffset,
+                componentType=original_accessor.componentType,
+                count=original_accessor.count,
+                type=original_accessor.type,
+                max=original_accessor.max,
+                min=original_accessor.min,
+                normalized=original_accessor.normalized
+            )
+            new_accessor_idx = len(new_accessors)
+            new_accessors.append(new_accessor)
+            accessor_mapping[accessor_idx] = new_accessor_idx
+
+            return new_accessor_idx
+
+        def get_or_create_image(image_idx):
+            """Get or create an image and return its new index"""
+            if image_idx in image_mapping:
+                return image_mapping[image_idx]
+
+            original_image = self.gltf2.images[image_idx]
+            new_bufferview_idx = None
+            if original_image.bufferView is not None:
+                new_bufferview_idx = get_or_create_bufferview(original_image.bufferView)
+
+            new_image = pygltflib.Image(
+                uri=original_image.uri,
+                mimeType=original_image.mimeType,
+                bufferView=new_bufferview_idx,
+                name=original_image.name
+            )
+            new_image_idx = len(new_images)
+            new_images.append(new_image)
+            image_mapping[image_idx] = new_image_idx
+
+            return new_image_idx
+
+        def get_or_create_sampler(sampler_idx):
+            if sampler_idx is None:
+                return None
+            if sampler_idx in sampler_mapping:
+                return sampler_mapping[sampler_idx]
+
+            original_sampler = self.gltf2.samplers[sampler_idx]
+
+            new_sampler = pygltflib.Sampler(
+                magFilter=original_sampler.magFilter,
+                minFilter=original_sampler.minFilter,
+                wrapS=original_sampler.wrapS,
+                wrapT=original_sampler.wrapT
+            )
+            new_sampler_idx = len(new_samplers)
+            new_samplers.append(new_sampler)
+            sampler_mapping[sampler_idx] = new_sampler_idx
+
+            return new_sampler_idx
+
+        def get_or_create_texture(texture_idx):
+            if texture_idx is None:
+                return None
+            if texture_idx in texture_mapping:
+                return texture_mapping[texture_idx]
+
+            original_texture = self.gltf2.textures[texture_idx]
+            new_image_idx = None
+            if original_texture.source is not None:
+                new_image_idx = get_or_create_image(original_texture.source)
+            new_sampler_idx = get_or_create_sampler(original_texture.sampler)
+
+            new_texture = pygltflib.Texture(
+                sampler=new_sampler_idx,
+                source=new_image_idx,
+                name=original_texture.name
+            )
+            new_texture_idx = len(new_textures)
+            new_textures.append(new_texture)
+            texture_mapping[texture_idx] = new_texture_idx
+
+            return new_texture_idx
+
+        def get_or_create_material(material_idx):
+            if material_idx is None:
+                return None
+            if material_idx in material_mapping:
+                return material_mapping[material_idx]
+
+            original_material = self.gltf2.materials[material_idx]
+
+            new_pbr = None
+            if original_material.pbrMetallicRoughness is not None:
+                original_pbr = original_material.pbrMetallicRoughness
+                new_base_color_texture = None
+                if original_pbr.baseColorTexture is not None:
+                    new_texture_idx = get_or_create_texture(original_pbr.baseColorTexture.index)
+                    new_base_color_texture = pygltflib.TextureInfo(
+                        index=new_texture_idx,
+                        texCoord=original_pbr.baseColorTexture.texCoord
+                    )
+
+                new_metallic_roughness_texture = None
+                if original_pbr.metallicRoughnessTexture is not None:
+                    new_texture_idx = get_or_create_texture(original_pbr.metallicRoughnessTexture.index)
+                    new_metallic_roughness_texture = pygltflib.TextureInfo(
+                        index=new_texture_idx,
+                        texCoord=original_pbr.metallicRoughnessTexture.texCoord
+                    )
+
+                new_pbr = pygltflib.PbrMetallicRoughness(
+                    baseColorFactor=original_pbr.baseColorFactor,
+                    baseColorTexture=new_base_color_texture,
+                    metallicFactor=original_pbr.metallicFactor,
+                    roughnessFactor=original_pbr.roughnessFactor,
+                    metallicRoughnessTexture=new_metallic_roughness_texture
+                )
+
+            new_normal_texture = None
+            if original_material.normalTexture is not None:
+                new_texture_idx = get_or_create_texture(original_material.normalTexture.index)
+                new_normal_texture = pygltflib.NormalTextureInfo(
+                    index=new_texture_idx,
+                    texCoord=original_material.normalTexture.texCoord,
+                    scale=original_material.normalTexture.scale
+                )
+
+            new_occlusion_texture = None
+            if original_material.occlusionTexture is not None:
+                new_texture_idx = get_or_create_texture(original_material.occlusionTexture.index)
+                new_occlusion_texture = pygltflib.OcclusionTextureInfo(
+                    index=new_texture_idx,
+                    texCoord=original_material.occlusionTexture.texCoord,
+                    strength=original_material.occlusionTexture.strength
+                )
+
+            new_emissive_texture = None
+            if original_material.emissiveTexture is not None:
+                new_texture_idx = get_or_create_texture(original_material.emissiveTexture.index)
+                new_emissive_texture = pygltflib.TextureInfo(
+                    index=new_texture_idx,
+                    texCoord=original_material.emissiveTexture.texCoord
+                )
+
+            new_material = pygltflib.Material(
+                name=original_material.name,
+                pbrMetallicRoughness=new_pbr,
+                normalTexture=new_normal_texture,
+                occlusionTexture=new_occlusion_texture,
+                emissiveTexture=new_emissive_texture,
+                emissiveFactor=original_material.emissiveFactor,
+                alphaMode=original_material.alphaMode,
+                alphaCutoff=original_material.alphaCutoff,
+                doubleSided=original_material.doubleSided
+            )
+            new_material_idx = len(new_materials)
+            new_materials.append(new_material)
+            material_mapping[material_idx] = new_material_idx
+
+            return new_material_idx
+
+        def handle_primitive(original_primitive):
+            new_attributes = pygltflib.Attributes()
+            if hasattr(original_primitive.attributes, 'POSITION') and original_primitive.attributes.POSITION is not None:
+                new_attributes.POSITION = get_or_create_accessor(original_primitive.attributes.POSITION)
+            if hasattr(original_primitive.attributes, 'NORMAL') and original_primitive.attributes.NORMAL is not None:
+                new_attributes.NORMAL = get_or_create_accessor(original_primitive.attributes.NORMAL)
+            if hasattr(original_primitive.attributes, 'TEXCOORD_0') and original_primitive.attributes.TEXCOORD_0 is not None:
+                new_attributes.TEXCOORD_0 = get_or_create_accessor(original_primitive.attributes.TEXCOORD_0)
+            if hasattr(original_primitive.attributes, 'COLOR_0') and original_primitive.attributes.COLOR_0 is not None:
+                new_attributes.COLOR_0 = get_or_create_accessor(original_primitive.attributes.COLOR_0)
+
+            new_indices = None
+            if original_primitive.indices is not None:
+                new_indices = get_or_create_accessor(original_primitive.indices)
+
+            new_material_idx = get_or_create_material(original_primitive.material)
+
+            new_primitive = pygltflib.Primitive(
+                attributes=new_attributes,
+                indices=new_indices,
+                material=new_material_idx,
+                mode=original_primitive.mode
+            )
+
+            return new_primitive
+
+        def get_or_create_mesh(mesh_idx):
+            if mesh_idx in mesh_mapping:
+                return mesh_mapping[mesh_idx]
+
+            original_mesh = self.gltf2.meshes[mesh_idx]
+
+            new_primitives = []
+            for original_primitive in original_mesh.primitives:
+                new_primitive = handle_primitive(original_primitive)
+                new_primitives.append(new_primitive)
+
+            new_mesh = pygltflib.Mesh(
+                primitives=new_primitives,
+                name=original_mesh.name
+            )
+            new_mesh_idx = len(new_meshes)
+            new_meshes.append(new_mesh)
+            mesh_mapping[mesh_idx] = new_mesh_idx
+
+            return new_mesh_idx
+
+        def handle_node(original_node_idx):
+            if original_node_idx in node_mapping:
+                return node_mapping[original_node_idx]
+
+            original_node = self.gltf2.nodes[original_node_idx]
+
+            new_mesh_idx = None
+            if original_node.mesh is not None:
+                new_mesh_idx = get_or_create_mesh(original_node.mesh)
+
+            new_children = []
+            for child_idx in original_node.children:
+                new_child_idx = handle_node(child_idx)
+                new_children.append(new_child_idx)
+
+            new_node = pygltflib.Node(
+                mesh=new_mesh_idx,
+                children=new_children,
+                matrix=original_node.matrix,
+                translation=original_node.translation,
+                rotation=original_node.rotation,
+                scale=original_node.scale,
+                name=original_node.name
+            )
+
+            if hasattr(original_node, 'extras') and original_node.extras is not None:
+                new_node.extras = copy.deepcopy(original_node.extras)
+
+            new_node_idx = len(new_nodes)
+            new_nodes.append(new_node)
+            node_mapping[original_node_idx] = new_node_idx
+
+            return new_node_idx
+
+        root_node_idx = handle_node(node_id)
+
+        new_gltf2 = pygltflib.GLTF2()
+
+        new_gltf2.nodes = new_nodes
+        new_gltf2.meshes = new_meshes
+        new_gltf2.materials = new_materials
+        new_gltf2.textures = new_textures
+        new_gltf2.samplers = new_samplers
+        new_gltf2.images = new_images
+        new_gltf2.accessors = new_accessors
+        new_gltf2.bufferViews = new_bufferviews
+        new_gltf2.buffers = new_buffers
+
+        new_scene = pygltflib.Scene(nodes=[root_node_idx])
+        new_gltf2.scenes = [new_scene]
+        new_gltf2.scene = 0
+
+        if buffer_data:
+            combined_data = b''.join(buffer_data)
+            new_gltf2.set_binary_blob(combined_data)
+            offset = 0
+            for i, data in enumerate(buffer_data):
+                new_gltf2.buffers[i].byteLength = len(data)
+                for bufferview in new_gltf2.bufferViews:
+                    if bufferview.buffer == i:
+                        bufferview.byteOffset += offset
+                offset += len(data)
+
+            if len(buffer_data) > 1:
+                for bufferview in new_gltf2.bufferViews:
+                    bufferview.buffer = 0
+
+                new_gltf2.buffers = [pygltflib.Buffer(byteLength=len(combined_data))]
+
+        return new_gltf2
+
     def __str__(self):
         class_dict = {"len(self.nodes)": len(self.nodes),
                       "nodes": [node.__dict__() for node in self.nodes],
