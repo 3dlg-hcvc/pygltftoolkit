@@ -13,7 +13,6 @@ import meshcat.transformations as tf
 import numpy as np
 import open3d as o3d
 import pygltflib
-import torch
 import trimesh
 from PIL import Image
 from pygltflib import GLTF2
@@ -1562,7 +1561,11 @@ class gltfScene():
         o3d.visualization.draw_geometries([pcd], point_show_normal=True)"""
         if fpd:
             def farthest_point_downsampling_idx_pointops(points, n_samples):
-                import pointops
+                try:
+                    import pointops
+                    import torch
+                except ImportError:
+                    raise ImportError("pointops and torch are required for Farthest Point Downsampling.")
 
                 points_tensor = torch.from_numpy(points).float().cuda()
 
