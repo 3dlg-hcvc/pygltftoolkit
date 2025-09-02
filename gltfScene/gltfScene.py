@@ -581,6 +581,9 @@ class gltfScene():
             self.segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
             self.segmentation_parts = {}
 
+            fine_segmentation_map = -np.ones((len(self.node_map)), dtype=np.int_)
+            fine_segmentation_parts = {}
+
             root_index = self.gltf2.scenes[0].nodes[0]
             root_node = self.node_lookup[root_index]["node"]
 
@@ -599,17 +602,44 @@ class gltfScene():
 
                 label = gltf2_node.extras["label"]
 
-                def _get_children(node):
+                def _get_children(node, level=1):
                     if not node.children:
                         return []
                     descendants = []
                     for child in node.children:
-                        descendants.append(child)
-                        descendants.extend(_get_children(child))
+                        descendants.append((level, child))
+                        descendants.extend(_get_children(child, level=level+1))
                     return descendants
 
-                children = _get_children(child_node)
-                children_ids = [child.id for child in children]
+                def _get_mesh_ids(node):
+                    mesh_ids = []
+                    if node.mesh is not None:
+                        mesh_ids.append(node.mesh)
+                    if node.children:
+                        for child in node.children:
+                            mesh_ids.extend(_get_mesh_ids(child))
+                    return mesh_ids
+
+                children = _get_children(child_node, level=1)
+
+                first_level_children = [child for child in children if child[0] == 1]
+
+                for child in first_level_children:
+                    # Drawer completion case - STK exports original drawer front as PartInit type with id
+                    if "id" not in child[1].extras or child[1].extras["type"] == "PartInit":
+                        continue
+
+                    child_pid = child[1].extras["id"]
+                    child_mesh_ids = _get_mesh_ids(child[1])
+
+                    node_mask = np.zeros(len(self.node_map), dtype=np.bool_)
+                    for mesh_id in child_mesh_ids:
+                        node_mask[self.mesh_map == mesh_id] = True
+
+                    fine_segmentation_map[node_mask] = child_pid
+
+                    new_part = SegmentationPart(pid=child_pid, name=child[1].name, label=child[1].name, trisegments=None)
+                    fine_segmentation_parts[child_pid] = new_part
 
                 # Assign the segmentation map
                 self.segmentation_map[self.node_map == child_node.id] = id
@@ -620,8 +650,22 @@ class gltfScene():
 
                 new_part = SegmentationPart(pid=id, name=label, label=label, trisegments=None)
                 self.segmentation_parts[id] = new_part
+
+            # Post-process affordance-level parts for completness
+            if len(fine_segmentation_parts) > 0:
+                # Find which articulated parts cannot be broken-down further into affordance-level parts
+                if len(np.where(fine_segmentation_map == -1)) > 0:
+                    promote_parts = np.unique(self.segmentation_map[fine_segmentation_map == -1])
+                    fine_segmentation_map[fine_segmentation_map == -1] = self.segmentation_map[fine_segmentation_map == -1]
+                    for part_id in promote_parts:
+                        fine_segmentation_parts[part_id] = copy.deepcopy(self.segmentation_parts[part_id])
+                self.fine_segmentation_map = fine_segmentation_map
+                self.fine_segmentation_parts = fine_segmentation_parts
+
             if len(np.unique(self.segmentation_map)) != len(self.segmentation_parts):
                 raise Exception(f"Number of unique segmentation map values ({len(np.unique(self.segmentation_map))}) does not match number of segmentation parts ({len(self.segmentation_parts)}).")
+            if (len(fine_segmentation_parts) > 0 and len(np.unique(fine_segmentation_map)) != len(fine_segmentation_parts)) or np.any(fine_segmentation_map == -1):
+                raise Exception(f"Number of unique fine segmentation map values ({len(np.unique(fine_segmentation_map))}) does not match number of fine segmentation parts ({len(fine_segmentation_parts)}).")
             # TODO: Add articulation annotations
         except Exception as e:
             raise Exception(f"Error extracting annotations from the glTF scene: {e}")
@@ -2468,6 +2512,556 @@ class gltfScene():
                 new_gltf2.buffers = [pygltflib.Buffer(byteLength=len(combined_data))]
 
         return new_gltf2
+
+    def append_primitive(self,
+                         mesh_id: int = None,
+                         positions=None,
+                         indices=None,
+                         normals=None,
+                         texcoords0=None,
+                         colors0=None,
+                         accessors: dict = None,
+                         indices_accessor: int = None,
+                         material=None,
+                         mode: int = pygltflib.TRIANGLES,
+                         refresh: bool = True):
+        """
+        Append a new primitive to an existing or a newly-created mesh.
+        Flexible API:
+        - Provide raw arrays (positions, indices, normals, texcoords0, colors0) and a material spec; the function will
+          create BufferViews/Accessors and update the binary buffer automatically.
+        - Or provide existing Accessor indices/objects via 'accessors' (keys: 'POSITION','NORMAL','TEXCOORD_0','COLOR_0')
+          and 'indices_accessor'. You may also pass dict Accessor specs (e.g., {'bufferView': int, 'componentType': ..., 'count': ..., 'type': ..., 'byteOffset': 0, 'min': [...], 'max': [...]}).
+        - 'material' can be:
+            * int (existing material index)
+            * pygltflib.Material (will be appended)
+            * dict spec with optional fields similar to GLTF2 schema, e.g.:
+              {
+                'name': str,
+                'pbrMetallicRoughness': {
+                    'baseColorFactor': [r,g,b,a],
+                    'baseColorTexture': { 'index': int } | { 'image': PIL.Image or np.ndarray or bytes or {'uri': path} or {'bufferView': int, 'mimeType': 'image/png'}, 'sampler': int|dict, 'name': str },
+                    'metallicFactor': float,
+                    'roughnessFactor': float,
+                    'metallicRoughnessTexture': { ... }
+                },
+                'normalTexture': { 'index': int } | { 'image': ..., 'sampler': ... },
+                'occlusionTexture': { ... },
+                'emissiveTexture': { ... },
+                'emissiveFactor': [r,g,b],
+                'alphaMode': 'OPAQUE'|'MASK'|'BLEND',
+                'alphaCutoff': float,
+                'doubleSided': bool
+              }
+        Returns:
+            dict: {'mesh_id': mesh_id, 'primitive_index': primitive_index}
+        """
+        # Ensure there is a mesh to append to
+        if mesh_id is None:
+            new_mesh = pygltflib.Mesh(primitives=[], name=None)
+            mesh_id = len(self.gltf2.meshes)
+            self.gltf2.meshes.append(new_mesh)
+
+        # Prepare binary blob accumulation
+        initial_blob = self.gltf2.binary_blob()
+        if initial_blob is None:
+            initial_blob = b""
+        blobs = [initial_blob]
+        buffer_offset = len(initial_blob)
+
+        def append_bytes_and_create_bufferview(data_bytes: bytes) -> int:
+            nonlocal buffer_offset
+            byte_length = len(data_bytes)
+            new_bv = pygltflib.BufferView(buffer=0, byteOffset=buffer_offset, byteLength=byte_length)
+            buffer_view_index = len(self.gltf2.bufferViews)
+            self.gltf2.bufferViews.append(new_bv)
+            blobs.append(data_bytes)
+            buffer_offset += byte_length
+            return buffer_view_index
+
+        def ensure_accessor(spec, gltf_type=None, component_type=None, count=None, min_val=None, max_val=None, byte_offset=0, normalized=None):
+            if spec is None:
+                return None
+            if isinstance(spec, int):
+                return spec
+            if isinstance(spec, pygltflib.Accessor):
+                idx = len(self.gltf2.accessors)
+                self.gltf2.accessors.append(spec)
+                return idx
+            if isinstance(spec, dict):
+                new_accessor = pygltflib.Accessor(
+                    bufferView=spec.get("bufferView"),
+                    byteOffset=spec.get("byteOffset", 0),
+                    componentType=spec.get("componentType", component_type),
+                    count=spec.get("count", count),
+                    type=spec.get("type", gltf_type),
+                    max=spec.get("max", max_val),
+                    min=spec.get("min", min_val),
+                    normalized=spec.get("normalized", normalized)
+                )
+                idx = len(self.gltf2.accessors)
+                self.gltf2.accessors.append(new_accessor)
+                return idx
+            raise ValueError("Unsupported accessor spec type. Expected int, Accessor, or dict.")
+
+        def create_float_accessor_from_array(array, gltf_type):
+            arr = np.asarray(array, dtype=np.float32)
+            if arr.ndim == 1:
+                raise ValueError("Attribute arrays must be 2D with shape (N, C).")
+            data_bytes = arr.tobytes(order="C")
+            buffer_view_index = append_bytes_and_create_bufferview(data_bytes)
+            accessor = pygltflib.Accessor(
+                bufferView=buffer_view_index,
+                byteOffset=0,
+                componentType=pygltflib.FLOAT,
+                count=arr.shape[0],
+                type=gltf_type,
+                max=arr.max(axis=0).astype(float).tolist(),
+                min=arr.min(axis=0).astype(float).tolist()
+            )
+            accessor_index = len(self.gltf2.accessors)
+            self.gltf2.accessors.append(accessor)
+            return accessor_index
+
+        def create_indices_accessor_from_array(idx_array):
+            arr = np.asarray(idx_array)
+            if arr.ndim == 2:
+                arr = arr.reshape(-1)
+            if arr.ndim != 1:
+                raise ValueError("Indices must be 1D or (M, K) convertible to 1D.")
+            max_index = int(arr.max()) if arr.size > 0 else 0
+            if max_index <= 255:
+                comp_type = pygltflib.UNSIGNED_BYTE
+                dtype = np.uint8
+            elif max_index <= 65535:
+                comp_type = pygltflib.UNSIGNED_SHORT
+                dtype = np.uint16
+            else:
+                comp_type = pygltflib.UNSIGNED_INT
+                dtype = np.uint32
+            arr = arr.astype(dtype, copy=False)
+            data_bytes = arr.tobytes(order="C")
+            buffer_view_index = append_bytes_and_create_bufferview(data_bytes)
+            accessor = pygltflib.Accessor(
+                bufferView=buffer_view_index,
+                byteOffset=0,
+                componentType=comp_type,
+                count=arr.size,
+                type=pygltflib.SCALAR,
+                max=[int(arr.max())] if arr.size > 0 else [0],
+                min=[int(arr.min())] if arr.size > 0 else [0]
+            )
+            accessor_index = len(self.gltf2.accessors)
+            self.gltf2.accessors.append(accessor)
+            return accessor_index
+
+        def ensure_sampler(sampler_spec):
+            if sampler_spec is None:
+                return None
+            if isinstance(sampler_spec, int):
+                return sampler_spec
+            if isinstance(sampler_spec, pygltflib.Sampler):
+                idx = len(self.gltf2.samplers)
+                self.gltf2.samplers.append(sampler_spec)
+                return idx
+            if isinstance(sampler_spec, dict):
+                new_sampler = pygltflib.Sampler(
+                    magFilter=sampler_spec.get("magFilter"),
+                    minFilter=sampler_spec.get("minFilter"),
+                    wrapS=sampler_spec.get("wrapS"),
+                    wrapT=sampler_spec.get("wrapT")
+                )
+                idx = len(self.gltf2.samplers)
+                self.gltf2.samplers.append(new_sampler)
+                return idx
+            raise ValueError("Unsupported sampler spec. Expected int, Sampler, or dict.")
+
+        def ensure_image(image_spec):
+            if isinstance(image_spec, int):
+                return image_spec
+            if isinstance(image_spec, pygltflib.Image):
+                idx = len(self.gltf2.images)
+                self.gltf2.images.append(image_spec)
+                return idx
+            if isinstance(image_spec, dict):
+                if "bufferView" in image_spec:
+                    new_image = pygltflib.Image(
+                        uri=image_spec.get("uri"),
+                        mimeType=image_spec.get("mimeType", "image/png"),
+                        bufferView=image_spec.get("bufferView"),
+                        name=image_spec.get("name")
+                    )
+                    idx = len(self.gltf2.images)
+                    self.gltf2.images.append(new_image)
+                    return idx
+                if "uri" in image_spec and image_spec["uri"] is not None:
+                    with open(image_spec["uri"], "rb") as f:
+                        data_bytes = f.read()
+                    mime = image_spec.get("mimeType", "image/png")
+                    bv = append_bytes_and_create_bufferview(data_bytes)
+                    new_image = pygltflib.Image(bufferView=bv, mimeType=mime, name=image_spec.get("name"))
+                    idx = len(self.gltf2.images)
+                    self.gltf2.images.append(new_image)
+                    return idx
+                if "image" in image_spec and image_spec["image"] is not None:
+                    raw = image_spec["image"]
+                    if isinstance(raw, Image.Image):
+                        img_byte_arr = io.BytesIO()
+                        raw.save(img_byte_arr, format='PNG')
+                        data_bytes = img_byte_arr.getvalue()
+                    elif isinstance(raw, np.ndarray):
+                        pil_img = Image.fromarray(raw)
+                        img_byte_arr = io.BytesIO()
+                        pil_img.save(img_byte_arr, format='PNG')
+                        data_bytes = img_byte_arr.getvalue()
+                    elif isinstance(raw, (bytes, bytearray)):
+                        data_bytes = bytes(raw)
+                    else:
+                        raise ValueError("Unsupported image payload; provide PIL.Image, numpy array, or bytes.")
+                    mime = image_spec.get("mimeType", "image/png")
+                    bv = append_bytes_and_create_bufferview(data_bytes)
+                    new_image = pygltflib.Image(bufferView=bv, mimeType=mime, name=image_spec.get("name"))
+                    idx = len(self.gltf2.images)
+                    self.gltf2.images.append(new_image)
+                    return idx
+            raise ValueError("Unsupported image spec. Expected int, Image, or dict with 'image'/'uri'/'bufferView'.")
+
+        def ensure_texture(texture_spec):
+            if texture_spec is None:
+                return None
+            if isinstance(texture_spec, int):
+                return texture_spec
+            if isinstance(texture_spec, pygltflib.Texture):
+                idx = len(self.gltf2.textures)
+                self.gltf2.textures.append(texture_spec)
+                return idx
+            if isinstance(texture_spec, dict):
+                if "index" in texture_spec and isinstance(texture_spec["index"], int):
+                    return texture_spec["index"]
+                image_idx = None
+                if "image" in texture_spec or "uri" in texture_spec or "bufferView" in texture_spec:
+                    image_idx = ensure_image(texture_spec)
+                elif "imageIndex" in texture_spec:
+                    image_idx = texture_spec["imageIndex"]
+                sampler_idx = ensure_sampler(texture_spec.get("sampler"))
+                new_texture = pygltflib.Texture(sampler=sampler_idx, source=image_idx, name=texture_spec.get("name"))
+                idx = len(self.gltf2.textures)
+                self.gltf2.textures.append(new_texture)
+                return idx
+            raise ValueError("Unsupported texture spec. Expected int, Texture, or dict.")
+
+        def ensure_texture_info(tex_info_spec):
+            if tex_info_spec is None:
+                return None
+            if isinstance(tex_info_spec, pygltflib.TextureInfo):
+                return tex_info_spec
+            if isinstance(tex_info_spec, dict):
+                if "index" in tex_info_spec and isinstance(tex_info_spec["index"], int):
+                    idx = tex_info_spec["index"]
+                else:
+                    idx = ensure_texture(tex_info_spec)
+                return pygltflib.TextureInfo(index=idx, texCoord=tex_info_spec.get("texCoord", 0))
+            # Allow passing raw texture spec directly
+            idx = ensure_texture(tex_info_spec)
+            return pygltflib.TextureInfo(index=idx, texCoord=0)
+
+        def ensure_material(material_spec):
+            if material_spec is None:
+                return None
+            if isinstance(material_spec, int):
+                return material_spec
+            if isinstance(material_spec, pygltflib.Material):
+                idx = len(self.gltf2.materials)
+                self.gltf2.materials.append(material_spec)
+                return idx
+            if isinstance(material_spec, dict):
+                mr = material_spec.get("pbrMetallicRoughness", {})
+                base_color_factor = mr.get("baseColorFactor")
+                base_color_texture = ensure_texture_info(mr.get("baseColorTexture")) if mr.get("baseColorTexture") is not None else None
+                metallic_factor = mr.get("metallicFactor")
+                roughness_factor = mr.get("roughnessFactor")
+                mr_texture = ensure_texture_info(mr.get("metallicRoughnessTexture")) if mr.get("metallicRoughnessTexture") is not None else None
+                new_pbr = pygltflib.PbrMetallicRoughness(
+                    baseColorFactor=base_color_factor,
+                    baseColorTexture=base_color_texture,
+                    metallicFactor=metallic_factor,
+                    roughnessFactor=roughness_factor,
+                    metallicRoughnessTexture=mr_texture
+                )
+
+                normal_tex = material_spec.get("normalTexture")
+                occlusion_tex = material_spec.get("occlusionTexture")
+                emissive_tex = material_spec.get("emissiveTexture")
+                new_normal_tex = None
+                if normal_tex is not None:
+                    if isinstance(normal_tex, dict) and "index" not in normal_tex:
+                        tex_idx = ensure_texture(normal_tex)
+                        new_normal_tex = pygltflib.NormalTextureInfo(index=tex_idx, texCoord=normal_tex.get("texCoord", 0), scale=normal_tex.get("scale"))
+                    elif isinstance(normal_tex, dict):
+                        new_normal_tex = pygltflib.NormalTextureInfo(index=normal_tex.get("index"), texCoord=normal_tex.get("texCoord", 0), scale=normal_tex.get("scale"))
+                    else:
+                        tex_idx = ensure_texture(normal_tex)
+                        new_normal_tex = pygltflib.NormalTextureInfo(index=tex_idx, texCoord=0)
+
+                new_occlusion_tex = None
+                if occlusion_tex is not None:
+                    idx = ensure_texture(occlusion_tex) if not (isinstance(occlusion_tex, dict) and "index" in occlusion_tex) else occlusion_tex["index"]
+                    new_occlusion_tex = pygltflib.OcclusionTextureInfo(index=idx, texCoord=(occlusion_tex.get("texCoord", 0) if isinstance(occlusion_tex, dict) else 0), strength=(occlusion_tex.get("strength") if isinstance(occlusion_tex, dict) else None))
+
+                new_emissive_tex = None
+                if emissive_tex is not None:
+                    idx = ensure_texture(emissive_tex) if not (isinstance(emissive_tex, dict) and "index" in emissive_tex) else emissive_tex["index"]
+                    new_emissive_tex = pygltflib.TextureInfo(index=idx, texCoord=(emissive_tex.get("texCoord", 0) if isinstance(emissive_tex, dict) else 0))
+
+                new_material = pygltflib.Material(
+                    name=material_spec.get("name"),
+                    pbrMetallicRoughness=new_pbr,
+                    normalTexture=new_normal_tex,
+                    occlusionTexture=new_occlusion_tex,
+                    emissiveTexture=new_emissive_tex,
+                    emissiveFactor=material_spec.get("emissiveFactor"),
+                    alphaMode=material_spec.get("alphaMode"),
+                    alphaCutoff=material_spec.get("alphaCutoff"),
+                    doubleSided=material_spec.get("doubleSided")
+                )
+                idx = len(self.gltf2.materials)
+                self.gltf2.materials.append(new_material)
+                return idx
+            raise ValueError("Unsupported material spec. Expected int, Material, or dict.")
+
+        # Build attributes
+        new_attributes = pygltflib.Attributes()
+
+        # Use provided accessors or create new ones from arrays
+        if accessors is not None:
+            if 'POSITION' in accessors and accessors['POSITION'] is not None:
+                new_attributes.POSITION = ensure_accessor(accessors['POSITION'])
+            if 'NORMAL' in accessors and accessors['NORMAL'] is not None:
+                new_attributes.NORMAL = ensure_accessor(accessors['NORMAL'])
+            if 'TEXCOORD_0' in accessors and accessors['TEXCOORD_0'] is not None:
+                new_attributes.TEXCOORD_0 = ensure_accessor(accessors['TEXCOORD_0'])
+            if 'COLOR_0' in accessors and accessors['COLOR_0'] is not None:
+                new_attributes.COLOR_0 = ensure_accessor(accessors['COLOR_0'])
+
+        # From arrays (override if both supplied)
+        if positions is not None:
+            new_attributes.POSITION = create_float_accessor_from_array(positions, pygltflib.VEC3)
+        if normals is not None:
+            new_attributes.NORMAL = create_float_accessor_from_array(normals, pygltflib.VEC3)
+        if texcoords0 is not None:
+            new_attributes.TEXCOORD_0 = create_float_accessor_from_array(texcoords0, pygltflib.VEC2)
+        if colors0 is not None:
+            colors_arr = np.asarray(colors0)
+            if colors_arr.ndim != 2 or colors_arr.shape[1] not in (3, 4):
+                raise ValueError("colors0 must be (N,3) or (N,4)")
+            if colors_arr.shape[1] == 3:
+                color_accessor = create_float_accessor_from_array(colors_arr.astype(np.float32), pygltflib.VEC3)
+            else:
+                color_accessor = create_float_accessor_from_array(colors_arr.astype(np.float32), pygltflib.VEC4)
+            new_attributes.COLOR_0 = color_accessor
+
+        # Indices
+        idx_accessor = None
+        if indices is not None:
+            idx_array = np.asarray(indices)
+            if idx_array.ndim == 2 and idx_array.shape[1] in (3, 2):
+                idx_array = idx_array.reshape(-1)
+            elif idx_array.ndim == 2:
+                idx_array = idx_array.reshape(-1)
+            elif idx_array.ndim != 1:
+                raise ValueError("indices must be 1D or (M, K)")
+            idx_accessor = create_indices_accessor_from_array(idx_array)
+        elif indices_accessor is not None:
+            idx_accessor = ensure_accessor(indices_accessor)
+        else:
+            # If indices are not provided but positions are, and number of vertices divisible by 3, generate sequential triangles
+            if positions is not None:
+                num_vertices = np.asarray(positions).shape[0]
+                if num_vertices % 3 != 0:
+                    raise ValueError("Cannot infer indices: number of vertices is not divisible by 3.")
+                idx_array = np.arange(num_vertices, dtype=np.int64)
+                idx_accessor = create_indices_accessor_from_array(idx_array)
+
+        # Material
+        material_index = ensure_material(material)
+
+        # Create and append primitive
+        new_primitive = pygltflib.Primitive(
+            attributes=new_attributes,
+            indices=idx_accessor,
+            material=material_index,
+            mode=mode
+        )
+        self.gltf2.meshes[mesh_id].primitives.append(new_primitive)
+
+        # Commit binary blob if we added any new data
+        if len(blobs) > 1:
+            self.gltf2.set_binary_blob(b"".join(blobs))
+
+        if refresh:
+            self._rebuild_scene_state()
+
+        return {"mesh_id": mesh_id, "primitive_index": len(self.gltf2.meshes[mesh_id].primitives) - 1}
+
+    def append_mesh(self,
+                    name: str = None,
+                    mesh_obj: pygltflib.Mesh = None,
+                    primitives: list = None,
+                    refresh: bool = True):
+        """
+        Append a new mesh. You can either:
+        - Provide a ready-made pygltflib.Mesh via 'mesh_obj', which will be appended as-is, or
+        - Provide 'name' and an optional list of primitive specs in 'primitives'. Each primitive spec can be either
+          a pygltflib.Primitive or a dict of arguments to 'append_primitive' (except mesh_id), e.g.:
+            { 'positions': ..., 'indices': ..., 'normals': ..., 'texcoords0': ..., 'colors0': ..., 'material': ... }
+        Returns:
+            int: mesh_id of the new mesh
+        """
+        if mesh_obj is not None:
+            mesh_id = len(self.gltf2.meshes)
+            self.gltf2.meshes.append(mesh_obj)
+            if refresh:
+                self._rebuild_scene_state()
+            return mesh_id
+
+        new_mesh = pygltflib.Mesh(primitives=[], name=name)
+        mesh_id = len(self.gltf2.meshes)
+        self.gltf2.meshes.append(new_mesh)
+
+        if primitives:
+            # Build primitives without refreshing per-primitive; refresh once at the end
+            for prim in primitives:
+                if isinstance(prim, pygltflib.Primitive):
+                    self.gltf2.meshes[mesh_id].primitives.append(prim)
+                elif isinstance(prim, dict):
+                    prim_args = dict(prim)
+                    prim_args["mesh_id"] = mesh_id
+                    prim_args["refresh"] = False
+                    self.append_primitive(**prim_args)
+                else:
+                    raise ValueError("Unsupported primitive spec; expected pygltflib.Primitive or dict of args.")
+
+        if refresh:
+            self._rebuild_scene_state()
+
+        return mesh_id
+
+    def append_node(self,
+                    parent_node_id: int = None,
+                    node_obj: pygltflib.Node = None,
+                    mesh_id: int = None,
+                    children_ids: list = None,
+                    name: str = None,
+                    matrix=None,
+                    translation=None,
+                    rotation=None,
+                    scale=None,
+                    extras=None,
+                    add_to_scene_if_root: bool = True,
+                    refresh: bool = True):
+        """
+        Append a new node and optionally attach to a parent and/or adopt children.
+        You can provide either a ready 'node_obj' (pygltflib.Node), or specify fields (name, mesh_id, TRS/matrix, extras).
+        If 'parent_node_id' is provided, the new node is added as a child of that parent.
+        If 'children_ids' is provided, those nodes are added as children of the new node.
+        If no parent is given and 'add_to_scene_if_root' is True, the new node is added to the active scene's root nodes.
+        Returns:
+            int: new node id
+        """
+        if node_obj is not None:
+            new_node = copy.deepcopy(node_obj)
+        else:
+            new_node = pygltflib.Node(
+                mesh=mesh_id,
+                children=[],
+                name=name,
+                matrix=matrix,
+                translation=translation,
+                rotation=rotation,
+                scale=scale,
+                extras=copy.deepcopy(extras) if extras is not None else None
+            )
+
+        # Assign children if provided
+        if children_ids:
+            new_node.children = list(children_ids)
+
+        new_node_id = len(self.gltf2.nodes)
+        self.gltf2.nodes.append(new_node)
+
+        # Link to parent if provided
+        if parent_node_id is not None:
+            parent_node = self.gltf2.nodes[parent_node_id]
+            if parent_node.children is None:
+                parent_node.children = []
+            parent_node.children.append(new_node_id)
+        elif add_to_scene_if_root and self.gltf2.scenes:
+            # Add as a root node in the active scene
+            if self.gltf2.scenes[self.gltf2.scene].nodes is None:
+                self.gltf2.scenes[self.gltf2.scene].nodes = []
+            self.gltf2.scenes[self.gltf2.scene].nodes.append(new_node_id)
+
+        # If adopted children were previously in scene roots, remove them from roots to avoid duplication
+        if children_ids and self.gltf2.scenes:
+            root_nodes = self.gltf2.scenes[self.gltf2.scene].nodes or []
+            self.gltf2.scenes[self.gltf2.scene].nodes = [nid for nid in root_nodes if nid not in children_ids]
+
+        if refresh:
+            self._rebuild_scene_state()
+
+        return new_node_id
+
+    def _rebuild_scene_state(self):
+        """
+        Rebuild internal caches (nodes, faces, vertices, maps) from the current self.gltf2.
+        Call after structural edits to keep gltfScene's derived data in sync.
+        """
+        # Reset derived structures
+        self.nodes = []
+        self.samplers = []  # Rebuild samplers from glTF
+
+        self._faces_list = []
+        self._vertices_list = []
+        self._no_transform_vertices_list = []
+        self._normals_list = []
+        self._node_map_list = []
+        self._mesh_map_list = []
+        self._primitive_map_list = []
+
+        self._raw_indices_list = []
+        self._vertex_counts_list = []
+
+        self.faces = None
+        self.vertices = None
+        self.no_transform_vertices = None
+        self.normals = None
+        self.node_map = None
+        self.mesh_map = None
+        self.primitive_map = None
+
+        self.node_lookup = {}
+        self.mesh_lookup = {}
+
+        self._buffer_cache = {}
+        self._binary_data_cache = {}
+
+        # Recreate samplers cache
+        self.samplers = []
+        for pygltflib_sampler in self.gltf2.samplers:
+            magFilter = pygltflib_sampler.magFilter
+            minFilter = pygltflib_sampler.minFilter
+            wrapS = pygltflib_sampler.wrapS
+            wrapT = pygltflib_sampler.wrapT
+            new_sampler = Sampler(magFilter=magFilter, minFilter=minFilter, wrapS=wrapS, wrapT=wrapT)
+            self.samplers.append(new_sampler)
+
+        # Rebuild node graph and geometry lists
+        if self.gltf2.scenes:
+            for root_node_id in self.gltf2.scenes[self.gltf2.scene].nodes:
+                new_node = self.initialize_node(root_node_id)
+                self.node_lookup[root_node_id] = {"node": new_node, "parent_id": None}
+                self.nodes.append(new_node)
+        self._finalize_arrays()
 
     def __str__(self):
         class_dict = {"len(self.nodes)": len(self.nodes),
