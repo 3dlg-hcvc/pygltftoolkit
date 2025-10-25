@@ -654,17 +654,19 @@ class gltfScene():
                 new_part = SegmentationPart(pid=id, name=label, label=label, trisegments=None)
                 self.segmentation_parts[id] = new_part
 
+            # Always assign fine_segmentation_map (even if empty, it should have correct size)
+            self.fine_segmentation_map = fine_segmentation_map
+            self.fine_segmentation_parts = fine_segmentation_parts
+
             # Post-process affordance-level parts for completness
             if len(fine_segmentation_parts) > 0:
                 # Find which articulated parts cannot be broken-down further into affordance-level parts
-                if np.any(fine_segmentation_map == -1):
-                    promote_parts = np.unique(self.segmentation_map[fine_segmentation_map == -1])
-                    fine_segmentation_map[fine_segmentation_map == -1] = self.segmentation_map[fine_segmentation_map == -1]
+                if np.any(self.fine_segmentation_map == -1):
+                    promote_parts = np.unique(self.segmentation_map[self.fine_segmentation_map == -1])
+                    self.fine_segmentation_map[self.fine_segmentation_map == -1] = self.segmentation_map[self.fine_segmentation_map == -1]
                     for part_id in promote_parts:
                         orig = self.segmentation_parts[part_id]
-                        fine_segmentation_parts[part_id] = SegmentationPart(pid=orig.pid, name=orig.name, label=orig.label, trisegments=orig.trisegments if hasattr(orig, "trisegments") else None)
-                self.fine_segmentation_map = fine_segmentation_map
-                self.fine_segmentation_parts = fine_segmentation_parts
+                        self.fine_segmentation_parts[part_id] = SegmentationPart(pid=orig.pid, name=orig.name, label=orig.label, trisegments=orig.trisegments if hasattr(orig, "trisegments") else None)
                 # Reconcile fine parts to match assigned ids in the fine map
                 assigned_vals = np.unique(self.fine_segmentation_map)
                 assigned_ids = [int(v) for v in assigned_vals.tolist() if v != -1]
@@ -681,7 +683,7 @@ class gltfScene():
 
             if len(np.unique(self.segmentation_map)) != len(self.segmentation_parts):
                 raise Exception(f"Number of unique segmentation map values ({len(np.unique(self.segmentation_map))}) does not match number of segmentation parts ({len(self.segmentation_parts)}).")
-            unique_fine_vals = np.unique(fine_segmentation_map)
+            unique_fine_vals = np.unique(self.fine_segmentation_map)
             only_default_val = len(unique_fine_vals) == 1 and unique_fine_vals[0] == -1
             if len(self.fine_segmentation_parts) > 0 and not only_default_val:
                 assigned_vals = [v for v in unique_fine_vals.tolist() if v != -1]
@@ -2859,12 +2861,12 @@ class gltfScene():
                 if normal_tex is not None:
                     if isinstance(normal_tex, dict) and "index" not in normal_tex:
                         tex_idx = ensure_texture(normal_tex)
-                        new_normal_tex = pygltflib.NormalTextureInfo(index=tex_idx, texCoord=normal_tex.get("texCoord", 0), scale=normal_tex.get("scale"))
+                        new_normal_tex = pygltflib.NormalMaterialTexture(index=tex_idx, texCoord=normal_tex.get("texCoord", 0), scale=normal_tex.get("scale"))
                     elif isinstance(normal_tex, dict):
-                        new_normal_tex = pygltflib.NormalTextureInfo(index=normal_tex.get("index"), texCoord=normal_tex.get("texCoord", 0), scale=normal_tex.get("scale"))
+                        new_normal_tex = pygltflib.NormalMaterialTexture(index=normal_tex.get("index"), texCoord=normal_tex.get("texCoord", 0), scale=normal_tex.get("scale"))
                     else:
                         tex_idx = ensure_texture(normal_tex)
-                        new_normal_tex = pygltflib.NormalTextureInfo(index=tex_idx, texCoord=0)
+                        new_normal_tex = pygltflib.NormalMaterialTexture(index=tex_idx, texCoord=0)
 
                 new_occlusion_tex = None
                 if occlusion_tex is not None:
