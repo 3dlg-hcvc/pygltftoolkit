@@ -2418,7 +2418,7 @@ class gltfScene():
             new_normal_texture = None
             if original_material.normalTexture is not None:
                 new_texture_idx = get_or_create_texture(original_material.normalTexture.index)
-                new_normal_texture = pygltflib.NormalTextureInfo(
+                new_normal_texture = pygltflib.NormalMaterialTexture(
                     index=new_texture_idx,
                     texCoord=original_material.normalTexture.texCoord,
                     scale=original_material.normalTexture.scale
