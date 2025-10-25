@@ -263,6 +263,7 @@ class gltfScene():
         self.precomputed_segmentation_parts: dict = {}
 
         self.segmentation_map: np.ndarray = np.empty((0), dtype=np.int_)
+        self.fine_segmentation_map: np.ndarray = np.empty((0), dtype=np.int_)
         self.precomputed_segmentation_map: np.ndarray = np.empty((0), dtype=np.int_)
 
         for pygltflib_sampler in self.gltf2.samplers:
