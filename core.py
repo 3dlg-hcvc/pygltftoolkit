@@ -11,7 +11,7 @@ def load(
     stk_segmentation: str = None,
     stk_articulation: str = None,
     stk_precomputed_segmentation: str = None,
-    annotated: bool = False,
+    annotated: bool = False
 ) -> gltfScene:
     """
     Load the glTF 2.0 file. Allows to load the segmentation and articulation annotations as produced by the STK.

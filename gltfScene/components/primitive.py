@@ -36,10 +36,10 @@ class Primitive():
             self.has_baseColorFactor = True
         self.vertex_colors: np.ndarray = None
         if vertex_colors is not None:
-            if np.any(vertex_colors > 1.0) or np.any(vertex_colors < 0.0):
+            """if np.any(vertex_colors > 1.0) or np.any(vertex_colors < 0.0):
                 raise ValueError("Color must be between 0.0 and 1.0.")
             if vertex_colors.shape[1] != 4:
-                raise ValueError("Color must have 4 channels.")
+                raise ValueError("Color must have 4 channels.")"""
             self.vertex_colors = vertex_colors
             self.has_colors = True
         self.material: Material = material

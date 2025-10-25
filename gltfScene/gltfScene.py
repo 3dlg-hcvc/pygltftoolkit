@@ -258,6 +258,7 @@ class gltfScene():
         self.has_precomputed_segmentation: bool = False
 
         self.segmentation_parts: dict = {}
+        self.fine_segmentation_parts: dict = {}
         self.articulation_parts: dict = {}
         self.precomputed_segmentation_parts: dict = {}
 
@@ -631,12 +632,11 @@ class gltfScene():
                     if gltf2_child.extras is None or "id" not in gltf2_child.extras or gltf2_child.extras.get("type") == "PartInit":
                         continue
 
-                    child_pid = gltf2_child.extras["id"]
-                    child_mesh_ids = _get_mesh_ids(child[1])
-
-                    node_mask = np.zeros(len(self.node_map), dtype=np.bool_)
-                    for mesh_id in child_mesh_ids:
-                        node_mask[self.mesh_map == mesh_id] = True
+                    child_pid = int(gltf2_child.extras["id"])
+                    # Use node-based masking to avoid leakage when meshes are reused across nodes
+                    child_descendants = _get_children(child[1], level=1)
+                    descendant_node_ids = [child[1].id] + [desc[1].id for desc in child_descendants]
+                    node_mask = np.isin(self.node_map, np.asarray(descendant_node_ids, dtype=self.node_map.dtype))
 
                     fine_segmentation_map[node_mask] = child_pid
 
@@ -656,7 +656,7 @@ class gltfScene():
             # Post-process affordance-level parts for completness
             if len(fine_segmentation_parts) > 0:
                 # Find which articulated parts cannot be broken-down further into affordance-level parts
-                if len(np.where(fine_segmentation_map == -1)) > 0:
+                if np.any(fine_segmentation_map == -1):
                     promote_parts = np.unique(self.segmentation_map[fine_segmentation_map == -1])
                     fine_segmentation_map[fine_segmentation_map == -1] = self.segmentation_map[fine_segmentation_map == -1]
                     for part_id in promote_parts:
@@ -767,7 +767,7 @@ class gltfScene():
                         resolved_prim = src_prim_idx
                 else:
                     resolved_prim = 0
-                
+
                 stk_id_to_node_prim[stk_id] = (gltf_node_id, resolved_prim)
                 if gltf_mesh_id is not None:
                     stk_id_to_mesh_id[stk_id] = gltf_mesh_id
@@ -1055,8 +1055,8 @@ class gltfScene():
 
             if node_index_map is not None:
                 stk_id_gltf_id_map = [node_index_map[node_index] for node_index in stk_id_gltf_id_map]
-        
-        print(stk_id_gltf_id_map)
+
+        # print(stk_id_gltf_id_map)
 
         self.has_precomputed_segmentation = True
         self.precomputed_segmentation_map = np.empty((len(self.node_map)), dtype=np.int_)
