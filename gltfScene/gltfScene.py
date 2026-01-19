@@ -5,8 +5,8 @@ import json
 import os
 import struct
 import tempfile
-from typing import Tuple
 import time
+from typing import Tuple
 
 import meshcat
 import meshcat.geometry as g
@@ -26,8 +26,6 @@ from .components.annotations import (
     TriSegment,
 )
 from .components.visual import PBRMaterial, Sampler, TextureImage, TextureMaterial
-
- 
 
 
 def lookat(eye, target, up):
@@ -755,15 +753,16 @@ class gltfScene():
             self.fine_segmentation_parts = fine_segmentation_parts
 
             # Post-process affordance-level parts for completness
-            if len(fine_segmentation_parts) > 0:
-                # Find which articulated parts cannot be broken-down further into affordance-level parts
-                if np.any(self.fine_segmentation_map == -1):
-                    promote_parts = np.unique(self.segmentation_map[self.fine_segmentation_map == -1])
-                    self.fine_segmentation_map[self.fine_segmentation_map == -1] = self.segmentation_map[self.fine_segmentation_map == -1]
-                    for part_id in promote_parts:
-                        orig = self.segmentation_parts[part_id]
-                        self.fine_segmentation_parts[part_id] = SegmentationPart(pid=orig.pid, name=orig.name, label=orig.label, trisegments=orig.trisegments if hasattr(orig, "trisegments") else None)
-                # Reconcile fine parts to match assigned ids in the fine map
+            # Promote coarse segmentation parts to fine_segmentation_map where no fine parts exist
+            if np.any(self.fine_segmentation_map == -1):
+                promote_parts = np.unique(self.segmentation_map[self.fine_segmentation_map == -1])
+                self.fine_segmentation_map[self.fine_segmentation_map == -1] = self.segmentation_map[self.fine_segmentation_map == -1]
+                for part_id in promote_parts:
+                    orig = self.segmentation_parts[part_id]
+                    self.fine_segmentation_parts[part_id] = SegmentationPart(pid=orig.pid, name=orig.name, label=orig.label, trisegments=orig.trisegments if hasattr(orig, "trisegments") else None)
+            
+            # Reconcile fine parts to match assigned ids in the fine map
+            if len(self.fine_segmentation_parts) > 0:
                 assigned_vals = np.unique(self.fine_segmentation_map)
                 assigned_ids = [int(v) for v in assigned_vals.tolist() if v != -1]
                 reconciled = {}
