@@ -4,21 +4,27 @@ import numpy as np
 
 
 class TriSegment():
-    def __init__(self, meshIndex: int, triIndex: list, segIndex: int = None):
+    def __init__(self, meshIndex: int, triIndex: list, segIndex: int = None, nodeIndex: int = None, triRange: list = None):
         """
         Initialize the TriSegment object
         Args:
+            nodeIndex: int, glTF node index
             meshIndex: int, glTF mesh index
             triIndex: list, segment information
             segIndex: int, precomputed segment index
+            triRange: list, range of triangles in the segment
         Properties:
+            nodeIndex: int, glTF node index
             meshIndex: int, glTF mesh index
             triIndex: list, segment information
             segIndex: int, precomputed segment index
+            triRange: list, range of triangles in the segment
         """
         self.meshIndex: int = meshIndex
         self.triIndex: list = triIndex
         self.segIndex: int = segIndex
+        self.nodeIndex: int = nodeIndex
+        self.triRange: list = triRange
 
     def __str__(self) -> str:
         class_dict = self.__dict__()
@@ -27,7 +33,9 @@ class TriSegment():
     def __dict__(self) -> dict:
         class_dict = {"meshIndex": self.meshIndex,
                       "triIndex": self.triIndex,
-                      "segIndex": self.segIndex}
+                      "segIndex": self.segIndex,
+                      "nodeIndex": self.nodeIndex,
+                      "triRange": self.triRange}
         return class_dict
 
 

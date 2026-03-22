@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 
 from pygltflib import GLTF2
 
@@ -10,7 +11,8 @@ def load(
     path: str,
     stk_segmentation: str = None,
     stk_articulation: str = None,
-    stk_precomputed_segmentation: str = None
+    stk_precomputed_segmentation: str = None,
+    annotated: bool = False
 ) -> gltfScene:
     """
     Load the glTF 2.0 file. Allows to load the segmentation and articulation annotations as produced by the STK.
@@ -18,9 +20,12 @@ def load(
         path: string, the path to the glTF 2.0 file
         stk_segmentation: string, the path to the segmentation annotations produced by the STK. Defaults to None.
         stk_articulation: string, the path to the articulation annotations produced by the STK. Defaults to None.
+        annotated: bool, whether the object has STK annotations embedded. Defaults to False.
     Returns:
         scene: pygltftoolkit.gltfScene object, the glTF 2.0 scene.
     """
+    overall_start = time.time()
+    t0 = time.time()
     scene = GLTF2().load(path)
 
     # We support only a single scene in glTF file.
@@ -31,25 +36,28 @@ def load(
 
     # Please use .glb, we will handle .gltf with an ugly trick
     if path.endswith(".gltf"):
+        t_convert = time.time()
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
             scene.save_binary(temp_file.name)
             temp_file_path = temp_file.name
+        t_reload = time.time()
         scene = GLTF2().load(temp_file_path)
         os.remove(temp_file_path)
 
-    gltf = gltfScene(scene)
+    t_scene = time.time()
+    gltf = gltfScene(scene, annotated=annotated)
 
     # Load the segmentation and articulation annotations
     if stk_segmentation is not None:
-        # No support yet
+        t_seg = time.time()
         gltf.load_stk_segmentation(stk_segmentation)
     if stk_articulation is not None:
         if stk_segmentation is None:
             raise ValueError("Please provide the segmentation annotations as well.")
-        # No support yet
+        t_art = time.time()
         gltf.load_stk_articulation(stk_articulation)
     if stk_precomputed_segmentation is not None:
-        # No support yet
+        t_pre = time.time()
         gltf.load_stk_precomputed_segmentation(stk_precomputed_segmentation)
 
     return gltf
