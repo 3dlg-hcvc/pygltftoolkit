@@ -1,10 +1,117 @@
 import os
+import json
+import struct
 import tempfile
 import time
 
 from pygltflib import GLTF2
 
 from .gltfScene import gltfScene
+
+
+_SPARSE_PART_PLACEHOLDER = {"__pygltftoolkit_sparse_parts_connectivity_null__": True}
+
+
+def _replace_sparse_parts_connectivity_nulls(payload):
+    """Replace null sparse part slots with a decoder-safe placeholder.
+
+    STK stores ``scene.extras.partsConnectivity.parts`` as a pid-indexed sparse
+    array.  Since valid part ids generally start at 1, slot 0 can be ``null``.
+    pygltflib's dataclasses-json decoder does not tolerate that null inside the
+    arbitrary extras payload, so we temporarily replace it while decoding and
+    restore it on the loaded GLTF2 object.
+    """
+    changed = False
+    scenes = payload.get("scenes")
+    if not isinstance(scenes, list):
+        return changed
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        extras = scene.get("extras")
+        if not isinstance(extras, dict):
+            continue
+        parts_connectivity = extras.get("partsConnectivity")
+        if not isinstance(parts_connectivity, dict):
+            continue
+        parts = parts_connectivity.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for index, part in enumerate(parts):
+            if part is None:
+                parts[index] = dict(_SPARSE_PART_PLACEHOLDER)
+                changed = True
+    return changed
+
+
+def _restore_sparse_parts_connectivity_nulls(scene):
+    for gltf_scene in scene.scenes or []:
+        extras = gltf_scene.extras
+        if not isinstance(extras, dict):
+            continue
+        parts_connectivity = extras.get("partsConnectivity")
+        if not isinstance(parts_connectivity, dict):
+            continue
+        parts = parts_connectivity.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for index, part in enumerate(parts):
+            if isinstance(part, dict) and part.get("__pygltftoolkit_sparse_parts_connectivity_null__"):
+                parts[index] = None
+
+
+def _load_with_sparse_parts_connectivity(path):
+    try:
+        return GLTF2().load(path)
+    except TypeError as exc:
+        if "NoneType" not in str(exc):
+            raise
+
+    if path.endswith(".glb"):
+        with open(path, "rb") as f:
+            data = f.read()
+        if len(data) < 20:
+            raise
+        magic, version, _ = struct.unpack_from("<III", data, 0)
+        if magic != 0x46546C67 or version != 2:
+            raise
+        offset = 12
+        chunks = []
+        changed = False
+        while offset + 8 <= len(data):
+            chunk_length, chunk_type = struct.unpack_from("<II", data, offset)
+            offset += 8
+            chunk = data[offset: offset + chunk_length]
+            offset += chunk_length
+            if chunk_type == 0x4E4F534A:
+                text = chunk.decode("utf-8").rstrip("\x00 \t\r\n")
+                payload = json.loads(text)
+                changed = _replace_sparse_parts_connectivity_nulls(payload)
+                if changed:
+                    chunk = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+                    chunk += b" " * ((4 - (len(chunk) % 4)) % 4)
+            chunks.append((chunk_type, chunk))
+        if not changed:
+            raise
+        total_length = 12 + sum(8 + len(chunk) for _, chunk in chunks)
+        rebuilt = bytearray(struct.pack("<III", magic, version, total_length))
+        for chunk_type, chunk in chunks:
+            rebuilt.extend(struct.pack("<II", len(chunk), chunk_type))
+            rebuilt.extend(chunk)
+        scene = GLTF2().load_from_bytes(bytes(rebuilt))
+        _restore_sparse_parts_connectivity_nulls(scene)
+        return scene
+
+    if path.endswith(".gltf"):
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not _replace_sparse_parts_connectivity_nulls(payload):
+            raise
+        scene = GLTF2().from_json(json.dumps(payload))
+        _restore_sparse_parts_connectivity_nulls(scene)
+        return scene
+
+    raise
 
 
 def load(
@@ -26,7 +133,7 @@ def load(
     """
     overall_start = time.time()
     t0 = time.time()
-    scene = GLTF2().load(path)
+    scene = _load_with_sparse_parts_connectivity(path)
 
     # We support only a single scene in glTF file.
     # Multiple scenes are rarely used and it was even proposed to remove them from the glTF 2.0 specification.
@@ -41,7 +148,7 @@ def load(
             scene.save_binary(temp_file.name)
             temp_file_path = temp_file.name
         t_reload = time.time()
-        scene = GLTF2().load(temp_file_path)
+        scene = _load_with_sparse_parts_connectivity(temp_file_path)
         os.remove(temp_file_path)
 
     t_scene = time.time()

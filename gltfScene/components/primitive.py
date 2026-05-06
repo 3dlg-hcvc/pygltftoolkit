@@ -47,6 +47,7 @@ class Primitive():
             material = PBRMaterial(baseColorFactor=np.array([1.0, 1.0, 1.0, 1.0]),
                                    metallicFactor=1.0,
                                    roughnessFactor=1.0)
+            self.material = material
 
     def remove_visuals(self):
         """
