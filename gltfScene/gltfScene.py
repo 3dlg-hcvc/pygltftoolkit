@@ -1489,27 +1489,32 @@ class gltfScene():
                     for face_idx, primitive_face in enumerate(primitive_faces):
                         for vert_idx, primitive_vertex in enumerate(primitive_face):
                             new_primitive_faces[face_idx][vert_idx] = np.where(unique_faces == primitive_vertex)[0]
-                    if primitive.has_texture:
-                        texture_image = primitive.material.texture
-                        texture_uv = primitive.material.uv
+                    primitive_material = primitive.material
+                    default_base_color = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+                    if primitive.has_texture and primitive_material is not None:
+                        texture_image = primitive_material.texture
+                        texture_uv = primitive_material.uv
                         if texture_image is not None:
                             image = texture_image.image
                             uv = texture_uv
                             visual = trimesh.visual.TextureVisuals(uv=uv, image=image)
                             geometry_dict[f"{mesh_id}-{primitive_id}"] = trimesh.Trimesh(vertices=primitive_vertices, faces=new_primitive_faces, visual=visual)
                         else:
-                            baseColorFactor = primitive.material.baseColorFactor
+                            baseColorFactor = primitive_material.baseColorFactor if primitive_material is not None else default_base_color
                             face_colors = np.ones((len(new_primitive_faces), 4), dtype=np.float32)
                             face_colors[:] = baseColorFactor
                             geometry_dict[f"{mesh_id}-{primitive_id}"] = trimesh.Trimesh(vertices=primitive_vertices, faces=new_primitive_faces, visual=trimesh.visual.color.ColorVisuals(face_colors=face_colors * 255))
                     elif primitive.has_colors:
-                        baseColorFactor = primitive.material.baseColorFactor
+                        baseColorFactor = primitive_material.baseColorFactor if primitive_material is not None else default_base_color
                         face_colors = np.ones((len(new_primitive_faces), 4), dtype=np.float32)
                         face_colors[:] = baseColorFactor
-                        face_colors *= primitive.vertex_colors[new_primitive_faces]
+                        vertex_face_colors = primitive.vertex_colors[new_primitive_faces]
+                        if vertex_face_colors.ndim == 3:
+                            vertex_face_colors = vertex_face_colors.mean(axis=1)
+                        face_colors *= vertex_face_colors
                         geometry_dict[f"{mesh_id}-{primitive_id}"] = trimesh.Trimesh(vertices=primitive_vertices, faces=new_primitive_faces, visual=trimesh.visual.color.ColorVisuals(face_colors=face_colors * 255))
                     elif primitive.has_baseColorFactor:
-                        baseColorFactor = primitive.material.baseColorFactor
+                        baseColorFactor = primitive_material.baseColorFactor if primitive_material is not None else default_base_color
                         face_colors = np.ones((len(new_primitive_faces), 4), dtype=np.float32)
                         face_colors[:] = baseColorFactor
                         geometry_dict[f"{mesh_id}-{primitive_id}"] = trimesh.Trimesh(vertices=primitive_vertices, faces=new_primitive_faces, visual=trimesh.visual.color.ColorVisuals(face_colors=face_colors * 255))
@@ -2982,7 +2987,9 @@ class gltfScene():
                     emissiveFactor=material_spec.get("emissiveFactor"),
                     alphaMode=material_spec.get("alphaMode"),
                     alphaCutoff=material_spec.get("alphaCutoff"),
-                    doubleSided=material_spec.get("doubleSided")
+                    doubleSided=material_spec.get("doubleSided"),
+                    extensions=material_spec.get("extensions"),
+                    extras=material_spec.get("extras")
                 )
                 idx = len(self.gltf2.materials)
                 self.gltf2.materials.append(new_material)
